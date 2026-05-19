@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Victron Load Control</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap');
+
+  :root {
+    --bg: #080d08;
+    --surface: #0f140f;
+    --surface2: #141a14;
+    --border: #1a261a;
+    --border2: #243424;
+    --green: #22c55e;
+    --green-dim: #16a34a;
+    --green-glow: rgba(34,197,94,0.10);
+    --red: #ef4444;
+    --red-dim: #dc2626;
+    --red-glow: rgba(239,68,68,0.10);
+    --amber: #f59e0b;
+    --text: #d1fae5;
+    --text-dim: #5a7a60;
+    --text-muted: #2d3f2d;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'IBM Plex Sans', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,0.06) 3px, rgba(0,0,0,0.06) 4px);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .app {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 440px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .header {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-bottom: 1px solid var(--border);
+    padding: 1.1rem 1.4rem;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-radius: 8px 8px 0 0;
+  }
+
+  .logo {
+    width: 34px; height: 34px;
+    border: 1px solid var(--green-dim);
+    border-radius: 5px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    background: var(--green-glow);
+  }
+  .logo svg { width: 17px; height: 17px; stroke: var(--green); fill: none; stroke-width: 1.8; }
+
+  .header-text { flex: 1; min-width: 0; }
+  .header-text h1 {
+    font-family: var(--mono);
+    font-size: 12px; font-weight: 600;
+    color: var(--green);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .header-text p {
+    font-size: 10px; color: var(--text-dim);
+    font-family: var(--mono);
+    margin-top: 2px;
+  }
+
+  .status-indicator {
+    display: flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 9px;
+    color: var(--text-muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+  .status-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--text-muted);
+    transition: background 0.3s, box-shadow 0.3s;
+    flex-shrink: 0;
+  }
+  .status-dot.connected { background: var(--green); box-shadow: 0 0 5px var(--green); animation: blink 2.5s ease-in-out infinite; }
+  .status-dot.scanning  { background: var(--amber); box-shadow: 0 0 5px var(--amber); animation: blink 0.8s ease-in-out infinite; }
+  .status-dot.error     { background: var(--red); }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .panel {
+    background: var(--surface);
+    border-left: 1px solid var(--border2);
+    border-right: 1px solid var(--border2);
+    border-bottom: 1px solid var(--border);
+    padding: 1.2rem 1.4rem;
+  }
+  .panel:last-of-type {
+    border-bottom: 1px solid var(--border2);
+    border-radius: 0 0 8px 8px;
+  }
+
+  .panel-label {
+    font-family: var(--mono);
+    font-size: 9px; font-weight: 600;
+    color: var(--text-muted);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    margin-bottom: 0.8rem;
+  }
+
+  .device-strip {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 9px 11px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    display: none;
+    flex-direction: column;
+    gap: 5px;
+    margin-bottom: 10px;
+  }
+  .device-strip.visible { display: flex; }
+  .device-strip .row { display: flex; gap: 10px; }
+  .device-strip .k { color: var(--text-muted); min-width: 52px; flex-shrink: 0; }
+  .device-strip .v { color: var(--text); word-break: break-all; }
+
+  .btn {
+    font-family: var(--mono);
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border: 1px solid var(--border2);
+    background: transparent;
+    color: var(--text-dim);
+    padding: 9px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.12s;
+    display: flex; align-items: center; gap: 7px; justify-content: center;
+    width: 100%;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.8; flex-shrink: 0; }
+  .btn:hover:not(:disabled) { border-color: var(--green-dim); color: var(--green); background: var(--green-glow); }
+  .btn:active:not(:disabled) { transform: scale(0.97); }
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .btn.primary { border-color: var(--green-dim); color: var(--green); background: var(--green-glow); }
+  .btn.disconnect { border-color: #2d1010; color: #7a3030; }
+  .btn.disconnect:hover:not(:disabled) { border-color: var(--red-dim); color: var(--red); background: var(--red-glow); }
+
+  .btn-row { display: flex; gap: 8px; }
+  .btn-row .btn { flex: 1; }
+
+  .load-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .load-btn {
+    font-family: var(--mono);
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border-radius: 5px;
+    cursor: pointer;
+    padding: 22px 10px 18px;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    transition: all 0.15s;
+    border: 1px solid var(--border2);
+    background: var(--surface2);
+    color: var(--text-muted);
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    position: relative;
+    overflow: hidden;
+  }
+  .load-btn svg {
+    width: 30px; height: 30px;
+    stroke: currentColor; fill: none; stroke-width: 1.5;
+  }
+  .load-btn .sub { font-size: 9px; letter-spacing: 0.12em; opacity: 0.5; margin-top: -4px; }
+  .load-btn:disabled { opacity: 0.25; cursor: not-allowed; }
+
+  .load-btn.on-btn:not(:disabled):hover { border-color: var(--green-dim); background: var(--green-glow); color: var(--green); }
+  .load-btn.on-btn.active { border-color: var(--green); background: var(--green-glow); color: var(--green); box-shadow: 0 0 0 1px var(--green-dim); }
+
+  .load-btn.off-btn:not(:disabled):hover { border-color: var(--red-dim); background: var(--red-glow); color: var(--red); }
+  .load-btn.off-btn.active { border-color: var(--red); background: var(--red-glow); color: var(--red); box-shadow: 0 0 0 1px var(--red-dim); }
+
+  .current-state {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+    min-height: 18px;
+  }
+  .badge {
+    padding: 1px 7px; border-radius: 3px;
+    font-size: 9px; font-weight: 600;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    border: 1px solid transparent;
+  }
+  .badge.on  { border-color: var(--green-dim); color: var(--green); background: var(--green-glow); }
+  .badge.off { border-color: #5a1515; color: var(--red); background: var(--red-glow); }
+  .badge.unk { border-color: var(--border2); color: var(--text-muted); }
+
+  .log {
+    background: #040704;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 9px 11px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    height: 160px;
+    overflow-y: auto;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .log::-webkit-scrollbar { width: 3px; }
+  .log::-webkit-scrollbar-track { background: transparent; }
+  .log::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  .log-line {
+    display: flex; gap: 10px; line-height: 1.55;
+    animation: fadein 0.18s ease forwards;
+  }
+  @keyframes fadein { from{opacity:0} to{opacity:1} }
+  .log-t { color: var(--text-muted); flex-shrink: 0; }
+  .log-m { color: var(--text-dim); word-break: break-all; }
+  .log-line.ok  .log-m { color: var(--green); }
+  .log-line.err .log-m { color: var(--red); }
+  .log-line.inf .log-m { color: var(--amber); }
+  .log-line.tx  .log-m { color: #6b8fff; }
+  .log-line.rx  .log-m { color: #c084fc; }
+
+  .warn {
+    background: #120e00;
+    border: 1px solid #2d2300;
+    border-radius: 4px;
+    padding: 9px 11px;
+    font-size: 10.5px;
+    color: var(--amber);
+    font-family: var(--mono);
+    line-height: 1.65;
+    margin-bottom: 10px;
+  }
+  .warn strong { color: #fbbf24; }
+
+  .footer {
+    margin-top: 14px;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--text-muted);
+    text-align: center;
+    line-height: 1.8;
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <div class="header">
+    <div class="logo">
+      <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+    </div>
+    <div class="header-text">
+      <h1>Victron Load Control</h1>
+      <p>SmartSolar MPPT 75/15 · VE.Direct/BLE</p>
+    </div>
+    <div class="status-indicator">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">idle</span>
+    </div>
+  </div>
+
+  <!-- Connect -->
+  <div class="panel">
+    <div class="panel-label">Connection</div>
+    <div class="device-strip" id="deviceStrip">
+      <div class="row"><span class="k">device</span><span class="v" id="devName">—</span></div>
+      <div class="row"><span class="k">id</span><span class="v" id="devId">—</span></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" id="btnConnect" onclick="connectBLE()">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+        Scan &amp; Connect
+      </button>
+      <button class="btn disconnect" id="btnDisconnect" disabled onclick="disconnectBLE()">
+        <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        Disconnect
+      </button>
+    </div>
+  </div>
+
+  <!-- Load Output -->
+  <div class="panel">
+    <div class="panel-label">Load Output · register 0xEDA9</div>
+
+    <div class="warn">
+      <strong>Note:</strong> writes to non-volatile flash. Don't send repeatedly in a loop.<br>
+      0x06 = always on &nbsp;·&nbsp; 0x00 = always off &nbsp;·&nbsp; 0x01 = BatteryLife (default)
+    </div>
+
+    <div class="current-state">
+      Current mode:&nbsp;<span class="badge unk" id="modeBadge">unknown</span>
+      <span id="modeDetail" style="color:var(--text-muted);font-size:10px;"></span>
+    </div>
+
+    <div class="load-grid">
+      <button class="load-btn on-btn" id="btnOn" disabled onclick="setLoad(0x06)">
+        <svg viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/>
+        </svg>
+        Always On
+        <span class="sub">0x06</span>
+      </button>
+      <button class="load-btn off-btn" id="btnOff" disabled onclick="setLoad(0x00)">
+        <svg viewBox="0 0 24 24">
+          <path d="M18.36 6.64A9 9 0 0 1 20.77 15"/><path d="M6.16 6.16a9 9 0 1 0 12.68 12.68"/>
+          <path d="M12 2v4"/><path d="M2 2l20 20"/>
+        </svg>
+        Always Off
+        <span class="sub">0x00</span>
+      </button>
+    </div>
+
+    <div style="margin-top:8px;">
+      <button class="btn" id="btnRead" disabled onclick="readLoad()">
+        <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        Read Current Mode
+      </button>
+    </div>
+  </div>
+
+  <!-- Log -->
+  <div class="panel">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.8rem;">
+      <div class="panel-label" style="margin-bottom:0;">Serial Log</div>
+      <button onclick="clearLog()" style="font-family:var(--mono);font-size:9px;background:transparent;border:none;color:var(--text-muted);cursor:pointer;letter-spacing:0.1em;text-transform:uppercase;padding:0;">clear</button>
+    </div>
+    <div class="log" id="log"></div>
+  </div>
+
+</div>
+
+<div class="footer">
+  requires chrome · web bluetooth api · serve over https or localhost<br>
+  pair pin: 000000 &nbsp;·&nbsp; gatt service: 306b0001 &nbsp;·&nbsp; tx: 306b0002 &nbsp;·&nbsp; rx: 306b0003
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// GATT UUIDs — VictronConnect proprietary protocol (community reverse-engineered)
+// The SmartSolar tunnels VE.Direct HEX frames over BLE via these characteristics.
+// ─────────────────────────────────────────────────────────────────────────────
+const SVC_UUID = '306b0001-b081-4037-83dc-e59fcc3cdfd0';
+const TX_UUID  = '306b0002-b081-4037-83dc-e59fcc3cdfd0'; // phone writes here
+const RX_UUID  = '306b0003-b081-4037-83dc-e59fcc3cdfd0'; // device notifies here
+
+// Load output mode register (from official VE.Direct HEX protocol doc, Rev 18)
+// Available on 10/15/20A load-output models. Firmware >= 1.15 required.
+const REG_LOAD_MODE = 0xEDA9;
+
+const MODE_NAMES = {
+  0x00: 'Always Off',
+  0x01: 'BatteryLife',
+  0x02: 'Conv. Alg. 1',
+  0x03: 'Conv. Alg. 2',
+  0x04: 'User Def. 1',
+  0x05: 'User Def. 2',
+  0x06: 'Always On',
+};
+
+let device   = null;
+let txChar   = null;
+let rxChar   = null;
+let rxBuffer = '';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VE.Direct HEX frame builder
+//
+// Format:  :[CMD][DATA_BYTES_AS_HEX][CHECKSUM_BYTE_AS_HEX]\n
+// - CMD is a single nibble (hex digit), NOT doubled
+// - All data bytes are encoded as 2-char uppercase hex
+// - Numbers are little-endian
+// - Checksum = (0x55 - sum_of_cmd_nibble_and_all_data_bytes) & 0xFF
+//
+// SET frame (cmd=8): :8 [regLo][regHi][flags=00][value][chk]\n
+// GET frame (cmd=7): :7 [regLo][regHi][flags=00][chk]\n
+// ─────────────────────────────────────────────────────────────────────────────
+function buildFrame(cmd, regId, value) {
+  const data = [
+    regId & 0xFF,         // register lo byte
+    (regId >> 8) & 0xFF,  // register hi byte
+    0x00,                 // flags (always 0 for requests)
+  ];
+  if (value !== undefined) data.push(value & 0xFF);
+
+  // checksum includes cmd nibble + all data bytes
+  let sum = cmd;
+  for (const b of data) sum += b;
+  const chk = (0x55 - (sum & 0xFF)) & 0xFF;
+
+  const h = n => n.toString(16).toUpperCase().padStart(2, '0');
+  return `:${cmd.toString(16).toUpperCase()}${data.map(h).join('')}${h(chk)}\n`;
+}
+
+const frameGet = (reg)        => buildFrame(7, reg);
+const frameSet = (reg, value) => buildFrame(8, reg, value);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Parse incoming VE.Direct HEX response frame
+// Response format: :[RSP][regLo][regHi][flags][value?][chk]\n
+// RSP codes: 7 = GET response, 8 = SET response
+// ─────────────────────────────────────────────────────────────────────────────
+function parseFrame(frame) {
+  const s = frame.replace(/^:/, '').replace(/[\r\n]+$/, '');
+  if (s.length < 8) return null;
+
+  const cmd = parseInt(s[0], 16);
+  const bytes = [];
+  for (let i = 1; i < s.length - 2; i += 2) {
+    bytes.push(parseInt(s.slice(i, i + 2), 16));
+  }
+  if (bytes.length < 3) return null;
+
+  return {
+    cmd,
+    regId: bytes[0] | (bytes[1] << 8),
+    flags: bytes[2],
+    value: bytes.length > 3 ? bytes[3] : null,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BLE connection
+// ─────────────────────────────────────────────────────────────────────────────
+async function connectBLE() {
+  if (!navigator.bluetooth) {
+    log('err', 'Web Bluetooth not available. Use Chrome on desktop or Android (not iOS).');
+    return;
+  }
+
+  try {
+    setStatus('scanning');
+    log('inf', 'Opening device picker… select your SmartSolar.');
+
+    device = await navigator.bluetooth.requestDevice({
+      // Scan for any device advertising the VictronConnect service,
+      // or filter by name prefix as a fallback
+      filters: [
+        { services: [SVC_UUID] },
+        { namePrefix: 'SmartSolar' },
+        { namePrefix: 'SolarCharger' },
+      ],
+      optionalServices: [SVC_UUID],
+    });
+
+    log('inf', `Found: ${device.name || device.id}`);
+    document.getElementById('devName').textContent = device.name || '(unnamed)';
+    document.getElementById('devId').textContent   = device.id;
+    document.getElementById('deviceStrip').classList.add('visible');
+
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+
+    log('inf', 'Connecting GATT…');
+    const server = await device.gatt.connect();
+
+    log('inf', 'Getting VictronConnect service (306b0001)…');
+    const service = await server.getPrimaryService(SVC_UUID);
+
+    log('inf', 'Getting TX characteristic (306b0002)…');
+    txChar = await service.getCharacteristic(TX_UUID);
+
+    log('inf', 'Getting RX characteristic (306b0003)…');
+    rxChar = await service.getCharacteristic(RX_UUID);
+
+    await rxChar.startNotifications();
+    rxChar.addEventListener('characteristicvaluechanged', onRxData);
+
+    log('ok', 'Connected! Subscribing to notifications.');
+    setStatus('connected');
+
+    document.getElementById('btnConnect').disabled    = true;
+    document.getElementById('btnDisconnect').disabled = false;
+    document.getElementById('btnOn').disabled         = false;
+    document.getElementById('btnOff').disabled        = false;
+    document.getElementById('btnRead').disabled       = false;
+
+    // auto read current state on connect
+    await delay(300);
+    await readLoad();
+
+  } catch (e) {
+    if (e.name === 'NotFoundError') {
+      log('inf', 'No device selected.');
+    } else {
+      log('err', `Connect error: ${e.message}`);
+    }
+    setStatus('idle');
+    device = null; txChar = null; rxChar = null;
+  }
+}
+
+async function disconnectBLE() {
+  if (device && device.gatt.connected) device.gatt.disconnect();
+  onDisconnected();
+}
+
+function onDisconnected() {
+  log('inf', 'Disconnected.');
+  setStatus('idle');
+  device = null; txChar = null; rxChar = null;
+  rxBuffer = '';
+  document.getElementById('btnConnect').disabled    = false;
+  document.getElementById('btnDisconnect').disabled = true;
+  document.getElementById('btnOn').disabled         = true;
+  document.getElementById('btnOff').disabled        = true;
+  document.getElementById('btnRead').disabled       = true;
+  document.getElementById('deviceStrip').classList.remove('visible');
+  setBadge('unk', '');
+  document.getElementById('btnOn').classList.remove('active');
+  document.getElementById('btnOff').classList.remove('active');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RX handler — reassemble frames from BLE chunks (device may fragment)
+// ─────────────────────────────────────────────────────────────────────────────
+function onRxData(event) {
+  const chunk = new TextDecoder().decode(event.target.value);
+  rxBuffer += chunk;
+
+  let nl;
+  while ((nl = rxBuffer.indexOf('\n')) !== -1) {
+    const frame = rxBuffer.slice(0, nl + 1);
+    rxBuffer    = rxBuffer.slice(nl + 1);
+    handleFrame(frame.trim());
+  }
+}
+
+function handleFrame(raw) {
+  if (!raw || raw[0] !== ':') return;
+  log('rx', `RX  ${raw}`);
+
+  const r = parseFrame(raw);
+  if (!r) { log('err', 'Could not parse frame'); return; }
+
+  if (r.flags & 0x01) { log('err', 'Device replied: unknown register ID'); return; }
+  if (r.flags & 0x02) { log('err', 'Device replied: read-only register'); return; }
+  if (r.flags & 0x04) { log('err', 'Device replied: parameter error / out of range'); return; }
+
+  // Handle load mode register response (GET or SET response)
+  if (r.regId === REG_LOAD_MODE && r.value !== null) {
+    const name  = MODE_NAMES[r.value] || `0x${r.value.toString(16).toUpperCase().padStart(2,'0')}`;
+    const isOn  = r.value === 0x06;
+    const isOff = r.value === 0x00;
+    setBadge(isOn ? 'on' : isOff ? 'off' : 'unk', name);
+    log('ok', `Load mode = ${name} (0x${r.value.toString(16).toUpperCase().padStart(2,'0')})`);
+    document.getElementById('btnOn').classList.toggle('active', isOn);
+    document.getElementById('btnOff').classList.toggle('active', isOff);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Write a VE.Direct frame to the TX characteristic
+// ─────────────────────────────────────────────────────────────────────────────
+async function sendFrame(frame) {
+  if (!txChar) { log('err', 'Not connected'); return; }
+  log('tx', `TX  ${frame.trim()}`);
+  await txChar.writeValue(new TextEncoder().encode(frame));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// User actions
+// ─────────────────────────────────────────────────────────────────────────────
+async function setLoad(value) {
+  const label = MODE_NAMES[value] || `0x${value.toString(16).toUpperCase()}`;
+  log('inf', `Setting load output → ${label}`);
+  try {
+    await sendFrame(frameSet(REG_LOAD_MODE, value));
+    // Read back after short pause to confirm the write took effect
+    await delay(500);
+    await readLoad();
+  } catch (e) {
+    log('err', `Send failed: ${e.message}`);
+  }
+}
+
+async function readLoad() {
+  log('inf', 'Reading load output mode (0xEDA9)…');
+  try {
+    await sendFrame(frameGet(REG_LOAD_MODE));
+  } catch (e) {
+    log('err', `Read failed: ${e.message}`);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UI helpers
+// ─────────────────────────────────────────────────────────────────────────────
+function setStatus(state) {
+  document.getElementById('statusDot').className  = 'status-dot ' + state;
+  document.getElementById('statusText').textContent = state;
+}
+
+function setBadge(type, label) {
+  const b = document.getElementById('modeBadge');
+  const d = document.getElementById('modeDetail');
+  b.className   = 'badge ' + type;
+  b.textContent = type === 'on' ? 'always on' : type === 'off' ? 'always off' : 'unknown';
+  d.textContent = label && label !== 'Always On' && label !== 'Always Off' ? `(${label})` : '';
+}
+
+function log(type, msg) {
+  const area = document.getElementById('log');
+  const time = new Date().toTimeString().slice(0, 8);
+  const line = document.createElement('div');
+  line.className = `log-line ${type}`;
+  line.innerHTML = `<span class="log-t">${time}</span><span class="log-m">${esc(msg)}</span>`;
+  area.appendChild(line);
+  area.scrollTop = area.scrollHeight;
+  while (area.children.length > 300) area.removeChild(area.firstChild);
+}
+
+function clearLog() { document.getElementById('log').innerHTML = ''; }
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+const delay = ms => new Promise(r => setTimeout(r, ms));
+
+// boot log
+log('inf', 'Ready. Click "Scan & Connect" to find your SmartSolar 75/15.');
+log('inf', 'Requires Chrome on desktop or Android. Will not work in Firefox or Safari.');
+</script>
+</body>
+</html>

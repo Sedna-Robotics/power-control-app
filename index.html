@@ -365,33 +365,26 @@ let keepaliveTimer=null, handshakeDone=false;
 // ─── SCAN & CONNECT ───────────────────────────────────────────────────────────
 async function startScan() {
   if (!navigator.bluetooth) { log('err','Web Bluetooth not available. Use Chrome.'); return; }
-  // requestDevice() MUST be the first await after the user gesture.
-  // Any DOM writes or async ops before it will silently block the picker in Chrome.
+  setScanState(true);
   let device;
   try {
+    // acceptAllDevices shows every nearby BLE device in the picker.
+    // Filtering by service UUID or name prefix silently hides devices
+    // if the SmartSolar isn't advertising those values — use all devices
+    // and let the user pick theirs from the list.
     device = await navigator.bluetooth.requestDevice({
-      filters: [
-        { services: [SVC] },
-        { namePrefix: 'SmartSolar' },
-        { namePrefix: 'SolarCharger' },
-        { namePrefix: 'Warden' },
-        { namePrefix: 'HQ' },
-        { namePrefix: 'SCC' },
-        { namePrefix: 'BlueSolar' },
-      ],
+      acceptAllDevices: true,
       optionalServices: [SVC],
     });
   } catch(e) {
+    setScanState(false);
     if (e.name !== 'NotFoundError') log('err', `Scan error: ${e.message}`);
     else log('inf', 'Scan cancelled.');
-    setScanState(false);
     return;
   }
   try {
-    setScanState(true);
-    log('inf','Opening scanner — select a Warden vehicle…');
     if (!fleet[device.id]) {
-      fleet[device.id]={id:device.id,name:device.name||'Warden ASV',device};
+      fleet[device.id]={id:device.id, name:device.name||'Warden ASV', device};
       log('inf',`Discovered: ${fleet[device.id].name}`);
     }
     device.addEventListener('gattserverdisconnected',()=>onDisconnected(device.id));

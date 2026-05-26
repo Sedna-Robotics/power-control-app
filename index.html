@@ -239,12 +239,7 @@
           <div class="telem-label">Panel Voltage</div>
           <div class="telem-value stale" id="val-pv-v">—<span class="telem-unit">V</span></div>
         </div>
-        <div class="telem-card" style="display:flex;align-items:center;justify-content:center">
-          <div style="text-align:center">
-            <div class="telem-label">Charger</div>
-            <div class="charger-state" id="val-charger-state">—</div>
-          </div>
-        </div>
+
       </div>
     </div>
 
@@ -343,8 +338,7 @@ const VREG_MAP = {
   0xEDBC: ['pv-power',     0.01, false],  // PV power alternate (×0.01 = W)
   0xEDBD: ['pv-power',     1.0,  false],  // Panel power W fallback
   0x1890: ['pv-power',     1.0,  false],  // Solar power W (low-res, last resort)
-  0x0200: ['charger-state',1.0,  false],  // Charger state ✓ streaming
-  0x0202: ['charger-err',  1.0,  false],  // Charger error (suppressed in display)
+  // 0x0200 charger-state and 0x0202 charger-err suppressed — values unreliable on this fw
   0x0150: ['uptime',       1.0,  false],  // Uptime ✓ streaming
   0x010E: ['dev-mode',     1.0,  false],  // Device mode
 };
@@ -710,16 +704,7 @@ function parseResponse(data){
 
 function updateTelem(id, val, rawVal){
   // Special non-numeric displays
-  if(id==='charger-state'){
-    const el=document.getElementById('val-charger-state');
-    if(el) el.textContent=CHARGER_STATES[rawVal]||`State ${rawVal}`;
-    return;
-  }
-  if(id==='charger-err'){
-    // Error codes from 0x0202 don't map to VE.Direct text codes on this device
-    // Suppress display to avoid misleading information
-    return;
-  }
+
   if(id==='uptime'){
     const el=document.getElementById('val-uptime');
     if(!el) return;

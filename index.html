@@ -285,22 +285,24 @@ const FRAME = {
   open_stream: b(0x06,0x00,0x82,0x18,0x93,0x42,0x10,0x27,0x03,0x01,0x03,0x03),
   open_short:  b(0x06,0x00,0x82,0x18,0x93,0x42,0x10,0x27),
   read_load:   b(0x05,0x00,0x81,0x19,0xED,0xA9),
-  // SET commands confirmed from pysmartsolar source + HCI snoop analysis:
-  // Format: 06 03 82 19 <REG_HI> <REG_LO> <CBOR_value>
-  // Auth: OS-level BLE pairing (passkey 000000) — NOT a GATT-level write.
-  //       Android must be BONDED to the device. Pair once in Android BT Settings.
+  // SET commands — format confirmed from phoenix.py (Olen/VictronConnect):
+  // 06 03 82 19 <REG_HI> <REG_LO> 41 <VALUE>
+  //   06    = SET command
+  //   03    = write flags
+  //   82    = CBOR array[2]
+  //   19 XX XX = CBOR uint16 (register, big-endian)
+  //   41 XX = CBOR byte_string(1) containing value  ← THIS was missing before!
   //
-  // Register map (from pysmartsolar __init__.py):
-  //   0xEDA8 = Load output STATUS (0=off, 1=on) — READ this to check state
-  //   0xEDA9 = Load output VOLTAGE (V) — stream measurement, NOT mode control
-  //   0xEDA9 in VE.Direct HEX = control mode (0=off,1=batterylife,6=always_on)
-  //   These are different protocols with different register semantics.
+  // Auth: OS-level BLE pairing (passkey 000000), NOT GATT-level.
+  // Device must be bonded in Android BT Settings first (pair once, persists).
   //
-  // To turn load on/off, write to 0xEDA8 (status register):
-  write_on:    b(0x06,0x03,0x82,0x19,0xED,0xA8,0x01),  // SET 0xEDA8=1 (load ON)
-  write_off:   b(0x06,0x03,0x82,0x19,0xED,0xA8,0x00),  // SET 0xEDA8=0 (load OFF)
-  read_status: b(0x05,0x03,0x81,0x19,0xED,0xA8),        // SUBSCRIBE to 0xEDA8 status
-  read_mode:   b(0x05,0x00,0x81,0x19,0xED,0xA9),        // READ 0xEDA9 (was our mode read)
+  // Registers:
+  //   0xEDA9 = Load output CONTROL MODE (0=always_off, 1=batterylife, 6=always_on)
+  //   0xEDA8 = Load output STATUS readback (0=off, 1=on)
+  write_on:    b(0x06,0x03,0x82,0x19,0xED,0xA9,0x41,0x06), // SET 0xEDA9=6 (always on)
+  write_off:   b(0x06,0x03,0x82,0x19,0xED,0xA9,0x41,0x00), // SET 0xEDA9=0 (always off)
+  read_load:   b(0x05,0x00,0x81,0x19,0xED,0xA9),            // READ 0xEDA9 mode
+  read_status: b(0x05,0x03,0x81,0x19,0xED,0xA8),            // SUBSCRIBE 0xEDA8 status
   // Subscribe to telemetry VREGs via bulk char (306b0004), 6 bytes per reg
   // Format: 05 00 81 19 <HI> <LO>
   subscribe1: b(0x05,0x00,0x81,0x19,0xEC,0x0F, 0x05,0x00,0x81,0x19,0xEC,0x0E, 0x05,0x00,0x81,0x19,0xEC,0x3F, 0x05,0x00),
@@ -458,7 +460,7 @@ function onDisconnected(id){
 async function readLoadMode(){
   if(!handshakeDone){log('err','Session not ready');return;}
   log('inf','Querying vehicle power state…');
-  await writeRX(FRAME.read_status);  // subscribe to 0xEDA8 status
+  await writeRX(FRAME.read_load);    // read 0xEDA9 control mode
 }
 // ── SET command approaches ────────────────────────────────────────────────────
 // All 5 binary VREG SET candidates confirmed IGNORED by device (log analysis).
@@ -480,32 +482,18 @@ async function setLoadMode(value){
   const label = value === 0x01 || value === 0x06 ? 'ON' : 'OFF';
   log('inf',`Sending power-${label} command…`);
 
-  // Frame for 0xEDA8 (load output status)
-  const frameEDA8 = value >= 0x01
-    ? FRAME.write_on    // 06 03 82 19 ED A8 01
-    : FRAME.write_off;  // 06 03 82 19 ED A8 00
-
-  // Frame for 0xEDA9 (VE.Direct mode — always_on=0x06, always_off=0x00)
-  const frameEDA9_on  = b(0x06,0x03,0x82,0x19,0xED,0xA9,0x06);
-  const frameEDA9_off = b(0x06,0x03,0x82,0x19,0xED,0xA9,0x00);
-  const frameEDA9 = (value >= 0x01) ? frameEDA9_on : frameEDA9_off;
-
+  // Confirmed correct format (phoenix.py): 06 03 82 19 <REG_HI> <REG_LO> 41 <VAL>
+  // 0x41 = CBOR byte_string(1) — the value wrapper that was missing in all prior attempts
+  const frame = value >= 0x01 ? FRAME.write_on : FRAME.write_off;
   const logFrame = f => Array.from(f).map(x=>x.toString(16).toUpperCase().padStart(2,'0')).join(' ');
+  log('inf',`SET 0xEDA9 → ${logFrame(frame)}`);
 
-  // Attempt 1: Write to 0xEDA8 (status register)
-  log('inf',`Try 1: SET 0xEDA8 → ${logFrame(frameEDA8)}`);
-  try{ await writeRX(frameEDA8); }catch(e){ log('err',`Write failed: ${e.message}`); }
-  await delay(500);
-  await readLoadMode();
-  await delay(400);
-
-  // Attempt 2: Write to 0xEDA9 (mode register, VE.Direct semantics)
-  log('inf',`Try 2: SET 0xEDA9 → ${logFrame(frameEDA9)}`);
-  try{ await writeRX(frameEDA9); }catch(e){ log('err',`Write failed: ${e.message}`); }
-  await delay(500);
+  try{ await writeRX(frame); }
+  catch(e){ log('err',`Write failed: ${e.message}`); }
+  await delay(600);
   await readLoadMode();
 
-  log('inf','If load did not change, ensure device is bonded in Android BT Settings (PIN: 000000).');
+  log('inf','If no change: ensure device is bonded in Android BT Settings (PIN: 000000).');
 }
 
 async function readAndCheck(expectedValue){
@@ -575,10 +563,9 @@ function parseResponse(data){
       const [rawVal, nextI]=parseCborValue(data,i+3);
       if(rawVal===null){i++;continue;}
 
-      // 0xEDA8 = Load output STATUS (0=off, 1=on) — pysmartsolar confirmed
+          // 0xEDA8 = Load output STATUS readback (0=off, 1=on)
       if(reg===0xEDA8){
-        const isOn = rawVal === 0x01;
-        const isOff = rawVal === 0x00;
+        const isOn=rawVal===0x01, isOff=rawVal===0x00;
         setBadge(isOn?'deployed':isOff?'recalled':'unk');
         log('ok', isOn?'Vehicle systems powered ON.':'Vehicle systems powered OFF.');
         document.getElementById('btnOn').classList.toggle('active',isOn);
@@ -587,13 +574,16 @@ function parseResponse(data){
         i=nextI-1; continue;
       }
 
-      // 0xEDA9 = Load output VOLTAGE in stream (pysmartsolar), OR control mode in VE.Direct GET
-      if(reg===0xEDA9 && pktType===0x00 && rawVal>=0 && rawVal<=6){
-        // Direct GET response — treat as VE.Direct mode (legacy read)
+      // 0xEDA9 = Load output CONTROL MODE (0=off, 1=batterylife, 6=always_on)
+      // Comes back as type=0x00 (GET response) or type=0x03 stream
+      if(reg===0xEDA9 && rawVal>=0 && rawVal<=6){
         const isOn=rawVal===0x06, isOff=rawVal===0x00;
         const names={0:'Always Off',1:'BatteryLife',2:'Conv.Alg.1',3:'Conv.Alg.2',4:'User Def.1',5:'User Def.2',6:'Always On'};
-        log('inf',`VE.Direct mode: ${names[rawVal]} (0x${rawVal.toString(16).toUpperCase()})`);
-        // Only update badge if we don't have a more reliable EDA8 reading
+        setBadge(isOn?'deployed':isOff?'recalled':'unk');
+        log('ok',isOn?'Vehicle systems powered ON.':isOff?'Vehicle systems powered OFF.':`Power mode: ${names[rawVal]}`);
+        document.getElementById('btnOn').classList.toggle('active',isOn);
+        document.getElementById('btnOff').classList.toggle('active',isOff);
+        if(pendingExpect!==undefined){ if(rawVal===pendingExpect) pendingExpect=null; }
         i=nextI-1; continue;
       }
 
@@ -798,8 +788,8 @@ function saveLog(){
     ['reset',     Array.from(FRAME.reset).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
     ['ping',      Array.from(FRAME.ping).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
     ['read_load', Array.from(FRAME.read_load).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
-    ['write_on',  Array.from(FRAME.write_on).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (confirmed from HCI snoop — needs auth)'],
-    ['write_off', Array.from(FRAME.write_off).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (confirmed from HCI snoop — needs auth)'],
+    ['write_on',  Array.from(FRAME.write_on).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (06 03 82 19 EDA9 41 06 — needs OS BT bonding)'],
+    ['write_off', Array.from(FRAME.write_off).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (06 03 82 19 EDA9 41 00 — needs OS BT bonding)'],
   ];
   fv.forEach(([name,hex])=>lines.push(`  ${name.padEnd(12)}: ${hex}`));
   lines.push('');

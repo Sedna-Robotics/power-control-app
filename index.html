@@ -286,7 +286,10 @@
   <div class="panel">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.85rem">
       <div class="panel-label" style="margin-bottom:0">System Log</div>
-      <button onclick="clearLog()" style="font-family:var(--mono);font-size:9px;background:transparent;border:none;color:var(--text-muted);cursor:pointer;letter-spacing:.12em;text-transform:uppercase;padding:0">Clear</button>
+      <div style="display:flex;gap:10px;align-items:center">
+        <button onclick="saveLog()" style="font-family:var(--mono);font-size:9px;background:transparent;border:1px solid var(--border2);color:var(--teal-light);cursor:pointer;letter-spacing:.12em;text-transform:uppercase;padding:3px 8px;border-radius:3px">Save Log</button>
+        <button onclick="clearLog()" style="font-family:var(--mono);font-size:9px;background:transparent;border:none;color:var(--text-muted);cursor:pointer;letter-spacing:.12em;text-transform:uppercase;padding:0">Clear</button>
+      </div>
     </div>
     <div class="log" id="log"></div>
   </div>
@@ -467,8 +470,16 @@ async function setLoadMode(value){
 }
 
 // ─── RESPONSE PARSING ─────────────────────────────────────────────────────────
-function onRxNotify(event){ parseResponse(new Uint8Array(event.target.value.buffer)); }
-function onBulkNotify(event){ parseResponse(new Uint8Array(event.target.value.buffer)); }
+function onRxNotify(event){
+  const data=new Uint8Array(event.target.value.buffer);
+  logRaw('RX3',data);
+  parseResponse(data);
+}
+function onBulkNotify(event){
+  const data=new Uint8Array(event.target.value.buffer);
+  logRaw('RX4',data);
+  parseResponse(data);
+}
 
 function parseCborValue(data, i){
   if(i>=data.length) return [null,i];
@@ -495,8 +506,6 @@ function toSigned32(v){ return v>2147483647?v-4294967296:v; }
 
 function parseResponse(data){
   if(data.length<2) return;
-  const hexStr=Array.from(data).map(x=>x.toString(16).toUpperCase().padStart(2,'0')).join(' ');
-
   // Ignore control bytes
   if(data[0]===0xF9) return;
   if(data[0]===0x02) return;
@@ -582,9 +591,21 @@ function updateTelem(id, val, reg){
 }
 
 // ─── WRITE HELPERS ────────────────────────────────────────────────────────────
-async function writeTX(data){ if(!txChar) throw new Error('No TX'); await txChar.writeValue(data); }
-async function writeRX(data){ if(!rxChar) throw new Error('No RX'); await rxChar.writeValue(data); }
-async function writeBULK(data){ if(!bulkChar) throw new Error('No BULK'); await bulkChar.writeValue(data); }
+async function writeTX(data){
+  if(!txChar) throw new Error('No TX');
+  logRaw('TX2',data);
+  await txChar.writeValue(data);
+}
+async function writeRX(data){
+  if(!rxChar) throw new Error('No RX');
+  logRaw('TX3',data);
+  await rxChar.writeValue(data);
+}
+async function writeBULK(data){
+  if(!bulkChar) throw new Error('No BULK');
+  logRaw('TX4',data);
+  await bulkChar.writeValue(data);
+}
 
 // ─── UI ───────────────────────────────────────────────────────────────────────
 function renderFleet(){
@@ -637,16 +658,76 @@ function setBadge(type){
   b.className='badge '+type;
   b.textContent=type==='deployed'?'Powered On':type==='recalled'?'Powered Off':'Unknown';
 }
+// Full debug log stored in memory for export
+const DEBUG_LOG = [];
+
 function log(type,msg){
   const area=document.getElementById('log');
-  const time=new Date().toTimeString().slice(0,8);
+  const now=new Date();
+  const time=now.toTimeString().slice(0,8);
   const line=document.createElement('div');
   line.className=`log-line ${type}`;
   line.innerHTML=`<span class="log-t">${time}</span><span class="log-m">${esc(msg)}</span>`;
   area.appendChild(line);area.scrollTop=area.scrollHeight;
   while(area.children.length>400)area.removeChild(area.firstChild);
+  // Store in full debug log (no limit)
+  DEBUG_LOG.push({ts:now.toISOString(), type, msg});
 }
-function clearLog(){document.getElementById('log').innerHTML='';}
+
+function logRaw(direction, data){
+  const hex=Array.from(data).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ');
+  const now=new Date();
+  DEBUG_LOG.push({ts:now.toISOString(), type:'raw', direction, hex, bytes:Array.from(data)});
+  // Also show in UI log (purple for RX, blue for TX)
+  const area=document.getElementById('log');
+  const time=now.toTimeString().slice(0,8);
+  const line=document.createElement('div');
+  line.className='log-line rx';
+  line.innerHTML=`<span class="log-t">${time}</span><span class="log-m">${direction} [${data.length}]: ${hex}</span>`;
+  area.appendChild(line); area.scrollTop=area.scrollHeight;
+  while(area.children.length>400) area.removeChild(area.firstChild);
+}
+
+function saveLog(){
+  const lines = [];
+  lines.push('=== WARDEN ASV DEBUG LOG ===');
+  lines.push(`Saved: ${new Date().toISOString()}`);
+  lines.push(`UA: ${navigator.userAgent}`);
+  lines.push(`Entries: ${DEBUG_LOG.length}`);
+  lines.push('');
+  lines.push('=== PROTOCOL STATE ===');
+  lines.push(`activeId: ${activeId}`);
+  lines.push(`handshakeDone: ${handshakeDone}`);
+  lines.push(`txChar: ${txChar ? 'ok' : 'null'}`);
+  lines.push(`rxChar: ${rxChar ? 'ok' : 'null'}`);
+  lines.push(`bulkChar: ${bulkChar ? 'ok' : 'null'}`);
+  lines.push('');
+  lines.push('=== FRAME VERIFICATION ===');
+  const fv = [
+    ['reset',     Array.from(FRAME.reset).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
+    ['ping',      Array.from(FRAME.ping).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
+    ['read_load', Array.from(FRAME.read_load).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
+    ['write_on',  Array.from(FRAME.write_on).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
+    ['write_off', Array.from(FRAME.write_off).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
+  ];
+  fv.forEach(([name,hex])=>lines.push(`  ${name.padEnd(12)}: ${hex}`));
+  lines.push('');
+  lines.push('=== EVENT LOG ===');
+  DEBUG_LOG.forEach(entry=>{
+    if(entry.type==='raw'){
+      lines.push(`${entry.ts}  ${entry.direction.padEnd(4)} [${entry.bytes.length.toString().padStart(3)}]: ${entry.hex}`);
+    } else {
+      lines.push(`${entry.ts}  ${entry.type.toUpperCase().padEnd(4)}  ${entry.msg}`);
+    }
+  });
+  const blob=new Blob([lines.join('\n')],{type:'text/plain'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=`warden-log-${Date.now()}.txt`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function clearLog(){document.getElementById('log').innerHTML=''; DEBUG_LOG.length=0;}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 

@@ -285,10 +285,13 @@ const FRAME = {
   open_stream: b(0x06,0x00,0x82,0x18,0x93,0x42,0x10,0x27,0x03,0x01,0x03,0x03),
   open_short:  b(0x06,0x00,0x82,0x18,0x93,0x42,0x10,0x27),
   read_load:   b(0x05,0x00,0x81,0x19,0xED,0xA9),
-  // SET command: cmd=0x08, CBOR array[2] = [uint16(reg), uint(value)]
-  // cmd=0x06 is "open attribute stream" not SET — corrected from analysis of log.
-  write_on:    b(0x08,0x00,0x82,0x19,0xED,0xA9,0x06),
-  write_off:   b(0x08,0x00,0x82,0x19,0xED,0xA9,0x00),
+  // SET candidates — trying cmd=05 flags=03 (GET cmd + write flag + value)
+  // This matches the "05 03 81 19 XX XX" pattern from vvvrrooomm wireshark captures
+  // where flags=0x00=read, flags=0x03=write
+  write_on:    b(0x05,0x03,0x81,0x19,0xED,0xA9,0x06),
+  write_off:   b(0x05,0x03,0x81,0x19,0xED,0xA9,0x00),
+  // Other candidates tried and failed:
+  // b(0x08,0x00,0x82,0x19,0xED,0xA9,0x06)  → silently ignored (confirmed from log)
   // Subscribe to telemetry VREGs via bulk char (306b0004), 6 bytes per reg
   // Format: 05 00 81 19 <HI> <LO>
   subscribe1: b(0x05,0x00,0x81,0x19,0xEC,0x0F, 0x05,0x00,0x81,0x19,0xEC,0x0E, 0x05,0x00,0x81,0x19,0xEC,0x3F, 0x05,0x00),
@@ -448,14 +451,63 @@ async function readLoadMode(){
   log('inf','Querying vehicle power state…');
   await writeRX(FRAME.read_load);
 }
+// All SET command candidates to try — we probe until one works
+// Format: [cmd, flags, 0x81, 0x19, REG_HI, REG_LO, value]
+// Candidates ordered by confidence based on protocol analysis
+function makeSetCandidates(value) {
+  const hi=0xED, lo=0xA9, v=value&0xFF;
+  return [
+    {desc:'cmd=05 flags=03 (GET+write flag)', frame: b(0x05,0x03,0x81,0x19,hi,lo,v)},
+    {desc:'cmd=07 flags=00 (symmetric SET)',  frame: b(0x07,0x00,0x82,0x19,hi,lo,v)},
+    {desc:'cmd=06 flags=03 (stream+write)',   frame: b(0x06,0x03,0x82,0x19,hi,lo,v)},
+    {desc:'cmd=09 flags=00',                  frame: b(0x09,0x00,0x82,0x19,hi,lo,v)},
+    {desc:'cmd=0A flags=00',                  frame: b(0x0A,0x00,0x82,0x19,hi,lo,v)},
+  ];
+}
+
 async function setLoadMode(value){
   if(!handshakeDone){log('err','Session not ready');return;}
-  log('inf',value===0x06?'Sending power-ON command…':'Sending shutdown command…');
-  try{
-    await writeRX(value===0x06?FRAME.write_on:FRAME.write_off);
-    await delay(600); await readLoadMode();
-  }catch(e){log('err',`Command failed: ${e.message}`);}
+  const label=value===0x06?'ON':'OFF';
+  log('inf',`Sending power-${label} command…`);
+
+  // Try each candidate; stop when the subsequent read shows the value changed
+  const candidates=makeSetCandidates(value);
+  for(const {desc,frame} of candidates){
+    log('inf',`Trying SET: ${desc}`);
+    try{ await writeRX(frame); }
+    catch(e){ log('err',`Write failed: ${e.message}`); continue; }
+    await delay(400);
+    // Read back — if changed, we found the right command
+    const changed=await readAndCheck(value);
+    if(changed){
+      log('ok',`SET succeeded with: ${desc}`);
+      return;
+    }
+    log('inf','No change, trying next candidate…');
+    await delay(200);
+  }
+  log('err','All SET candidates exhausted — device did not accept write.');
+  log('err','A BLE sniff of VictronConnect changing this setting is needed.');
+  await readLoadMode();
 }
+
+// Read load mode and return true if it now matches expectedValue
+async function readAndCheck(expectedValue){
+  return new Promise(async resolve=>{
+    let resolved=false;
+    const handler=()=>{
+      // Will be triggered by parseResponse setting the badge
+      // We check the current badge state
+    };
+    // Simple approach: send read and wait for response
+    pendingExpect=expectedValue;
+    try{ await writeRX(FRAME.read_load); }catch(e){ resolve(false); return; }
+    await delay(400);
+    resolve(pendingExpect===null); // null means it matched
+    pendingExpect=undefined;
+  });
+}
+let pendingExpect=undefined;
 
 // ─── RESPONSE PARSING ─────────────────────────────────────────────────────────
 function onRxNotify(event){
@@ -522,6 +574,10 @@ function parseResponse(data){
         log('ok',isOn?'Vehicle systems powered ON.':isOff?'Vehicle systems powered OFF.':`Power mode: ${names[rawVal]}`);
         document.getElementById('btnOn').classList.toggle('active',isOn);
         document.getElementById('btnOff').classList.toggle('active',isOff);
+        // Signal to readAndCheck whether expected value was found
+        if(pendingExpect!==undefined){
+          if(rawVal===pendingExpect) pendingExpect=null; // matched
+        }
         i=nextI-1; continue;
       }
 
@@ -724,8 +780,8 @@ function saveLog(){
     ['reset',     Array.from(FRAME.reset).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
     ['ping',      Array.from(FRAME.ping).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
     ['read_load', Array.from(FRAME.read_load).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
-    ['write_on',  Array.from(FRAME.write_on).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (cmd=0x08=SET)'],
-    ['write_off', Array.from(FRAME.write_off).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (cmd=0x08=SET)'],
+    ['write_on',  Array.from(FRAME.write_on).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (cmd=0x05 flags=0x03)'],
+    ['write_off', Array.from(FRAME.write_off).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (cmd=0x05 flags=0x03)'],
   ];
   fv.forEach(([name,hex])=>lines.push(`  ${name.padEnd(12)}: ${hex}`));
   lines.push('');

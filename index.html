@@ -195,7 +195,7 @@
       <svg viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1" fill="currentColor"/></svg>
       Scan for Vehicles
     </button>
-    <div id="btDiag" style="display:none;margin-top:8px;background:var(--surface2);border:1px solid var(--border2);border-radius:4px;padding:9px 11px;font-family:var(--mono);font-size:10px;color:var(--text-dim);line-height:1.8"></div>
+
   </div>
 
   <!-- Power -->
@@ -328,7 +328,7 @@ const FRAME = {
   subscribe1: b(0x05,0x00,0x81,0x19,0xEC,0x0F, 0x05,0x00,0x81,0x19,0xEC,0x0E, 0x05,0x00,0x81,0x19,0xEC,0x3F, 0x05,0x00),
   subscribe2: b(0x81,0x19,0xEC,0xDC, 0x05,0x00,0x81,0x19,0xEC,0xEB, 0x05,0x00,0x81,0x19,0xEC,0xED, 0x05,0x00,0x81,0x19),
   subscribe3: b(0x18,0x90, 0x05,0x00,0x81,0x19,0xEC,0x5A, 0x05,0x00,0x81,0x19,0xED,0xD3, 0x05,0x00,0x81,0x19,0xED,0xAA),
-  subscribe4: b(0x05,0x00,0x81,0x19,0xED,0xAB, 0x05,0x00,0x81,0x19,0xED,0xAD),
+  subscribe4: b(0x05,0x00,0x81,0x19,0xED,0xAB, 0x05,0x00,0x81,0x19,0xED,0xAD, 0x05,0x00,0x81,0x19,0xED,0xBD),
 };
 
 // ─── REGISTER MAP ─────────────────────────────────────────────────────────────
@@ -336,16 +336,15 @@ const FRAME = {
 // Format: [display_id, scale, signed]
 // Only registers seen in actual stream packets are included.
 const VREG_MAP = {
-  0xED8D: ['bat-v',        0.01, false],  // Battery voltage (mV×0.01→V) ✓ streaming
+  0xED8D: ['bat-v',        0.01, false],  // Battery voltage ✓ streaming
   0xEDBB: ['pv-v',         0.01, false],  // Panel voltage ✓ streaming
+  0xEDBD: ['pv-power',     1.0,  false],  // Panel power W (un16)
+  0xECED: ['pv-power',     1.0,  true ],  // PV power from VE.Can (sn16)
+  0x1890: ['pv-power',     1.0,  false],  // Solar power W (short encoding, low-res)
   0x0200: ['charger-state',1.0,  false],  // Charger state ✓ streaming
-  0x0202: ['charger-err',  1.0,  false],  // Charger error code ✓ streaming
-  0x1890: ['pv-power',     1.0,  false],  // Solar power W ✓ streaming (short encoding)
-  0x0150: ['uptime',       1.0,  false],  // Uptime seconds ✓ streaming
-  0x010E: ['dev-mode',     1.0,  false],  // Device mode ✓ streaming
-  // Not streaming in this firmware — kept for future:
-  // 0xECDC: ['pv-v', 0.01, false],
-  // 0xEC0F: ['bat-v', 0.01, false],
+  0x0202: ['charger-err',  1.0,  false],  // Charger error (suppressed in display)
+  0x0150: ['uptime',       1.0,  false],  // Uptime ✓ streaming
+  0x010E: ['dev-mode',     1.0,  false],  // Device mode
 };
 
 const CHARGER_STATES = {
@@ -374,45 +373,14 @@ function friendlyName(entry){ return nameMap[entry.id] || entry.name; }
 let keepaliveTimer=null, handshakeDone=false;
 
 // ─── SCAN & CONNECT ───────────────────────────────────────────────────────────
-function diag(msg) {
-  const el = document.getElementById('btDiag');
-  el.style.display = '';
-  el.innerHTML += msg + '<br>';
-  log('inf', msg);
-}
-
 async function startScan() {
-  document.getElementById('btDiag').innerHTML = '';
-  diag('Button fired ✓');
-
-  if (!navigator.bluetooth) {
-    diag('❌ navigator.bluetooth is undefined — Web Bluetooth not available');
-    diag('Must use Chrome on Android or desktop (not Firefox, Safari, or WebView)');
-    return;
-  }
-  diag('navigator.bluetooth ✓');
-
-  // Check if the page is on HTTPS or localhost (required for Web Bluetooth)
-  const proto = location.protocol;
-  diag(`Protocol: ${proto} ${proto === 'https:' ? '✓' : '❌ must be https'}`);
-
-  // Check bluetooth availability
-  let available = false;
-  try { available = await navigator.bluetooth.getAvailability(); } catch(e) {}
-  diag(`Bluetooth available: ${available}`);
-
-  if (!available) {
-    diag('❌ Bluetooth is off or unavailable — turn on Bluetooth and try again');
-    return;
-  }
-
+  if (!navigator.bluetooth) { log('err','Web Bluetooth not available. Use Chrome.'); return; }
   setScanState(true);
-  diag('Calling requestDevice()…');
-
   let device;
   try {
     device = await navigator.bluetooth.requestDevice({
       filters: [
+        { services: [SVC] },
         { namePrefix: 'SmartSolar' },
         { namePrefix: 'SolarCharger' },
         { namePrefix: 'BlueSolar' },
@@ -421,16 +389,13 @@ async function startScan() {
       ],
       optionalServices: [SVC],
     });
-    diag(`Device selected: ${device.name || device.id} ✓`);
+    log('inf', `Device selected: ${device.name || device.id}`);
   } catch(e) {
     setScanState(false);
-    if (e.name === 'NotFoundError') diag('Picker cancelled by user.');
-    else if (e.name === 'SecurityError') diag(`❌ SecurityError: ${e.message} — page may not be served over HTTPS`);
-    else if (e.name === 'NotSupportedError') diag(`❌ NotSupportedError: ${e.message}`);
-    else diag(`❌ ${e.name}: ${e.message}`);
+    if (e.name !== 'NotFoundError') log('err', `Scan error: ${e.message}`);
+    else log('inf', 'Scan cancelled.');
     return;
   }
-
   try {
     if (!fleet[device.id]) {
       fleet[device.id] = {id:device.id, name:device.name||'Warden ASV', device};
@@ -748,11 +713,8 @@ function updateTelem(id, val, rawVal){
     return;
   }
   if(id==='charger-err'){
-    const el=document.getElementById('val-charger-err');
-    if(!el) return;
-    const errText=CHARGER_ERRORS[rawVal]||`Error ${rawVal}`;
-    el.textContent=rawVal===0?'—':errText;
-    el.style.color=rawVal===0?'var(--text-muted)':'var(--red)';
+    // Error codes from 0x0202 don't map to VE.Direct text codes on this device
+    // Suppress display to avoid misleading information
     return;
   }
   if(id==='uptime'){
@@ -773,8 +735,8 @@ function updateTelem(id, val, rawVal){
     colorClass=val>5?'positive':'';
   } else if(id==='bat-v'){
     display=val.toFixed(2);
-    // Low voltage warning: <22V for 24V system, <11V for 12V
-    colorClass=val<11?'negative':val<12?'warn':'';
+    // No color coding — voltage is informational only
+    colorClass='';
   } else if(id==='pv-v'){
     display=val.toFixed(2);
     colorClass=val>1?'positive':'';

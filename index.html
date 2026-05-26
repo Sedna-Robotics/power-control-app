@@ -142,6 +142,7 @@
   .log-line.inf .log-m{color:var(--gold)}
   .log-line.rx .log-m{color:#9b59b6}
 
+  #pinInput:focus{border-color:var(--gold-dim)!important;box-shadow:0 0 0 1px var(--gold-dim)}
   .footer{margin-top:14px;font-family:var(--mono);font-size:10px;color:var(--text-muted);text-align:center;line-height:1.8;letter-spacing:.06em;text-transform:uppercase}
   .footer span{color:var(--teal)}
 </style>
@@ -164,6 +165,17 @@
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.85rem">
       <div class="panel-label" style="margin-bottom:0">Fleet</div>
       <span id="fleetCount" style="font-family:var(--mono);font-size:10px;color:var(--text-muted);letter-spacing:.1em"></span>
+    </div>
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:8px 11px;margin-bottom:10px;font-family:var(--mono);font-size:10px;color:var(--text-dim);line-height:1.7">
+      <span style="color:var(--gold)">⚠</span> Device must be <strong style="color:var(--text)">paired</strong> before connecting.
+      Go to <strong style="color:var(--text)">Android Settings → Bluetooth → pair device</strong>
+      and enter PIN: <input id="pinInput" type="text" inputmode="numeric" maxlength="6"
+        value="000000"
+        style="background:var(--surface);border:1px solid var(--border2);color:var(--gold);
+               font-family:var(--mono);font-size:11px;width:62px;padding:2px 5px;
+               border-radius:3px;text-align:center;outline:none;letter-spacing:2px"
+        oninput="this.value=this.value.replace(/[^0-9]/g,'')"
+        title="Device PIN (default varies by device)">
     </div>
     <div class="connected-bar" id="connectedBar">
       <div class="pulse"></div>
@@ -357,8 +369,17 @@ async function startScan() {
     setScanState(true);
     log('inf','Opening scanner — select a Warden vehicle…');
     const device = await navigator.bluetooth.requestDevice({
-      filters:[{services:[SVC]},{namePrefix:'SmartSolar'},{namePrefix:'SolarCharger'},{namePrefix:'Warden'}],
-      optionalServices:[SVC],
+      // Cast a wide net — SmartSolar may advertise by name or manufacturer data,
+      // not always by service UUID. User picks from the OS device list.
+      filters: [
+        { services: [SVC] },           // devices that advertise the 306b service
+        { namePrefix: 'SmartSolar' },
+        { namePrefix: 'SolarCharger' },
+        { namePrefix: 'Warden' },
+        { namePrefix: 'HQ' },          // Victron serial numbers start with HQ
+        { namePrefix: 'SCC' },         // another common prefix
+      ],
+      optionalServices: [SVC],
     });
     if (!fleet[device.id]) {
       fleet[device.id]={id:device.id,name:device.name||'Warden ASV',device};

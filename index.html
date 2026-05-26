@@ -415,27 +415,47 @@ function onBulkNotify(event) {
 function parseResponse(data) {
   if (data.length === 0) return;
 
-  const hex = Array.from(data).map(b => b.toString(16).toUpperCase().padStart(2,'0')).join(' ');
-  log('rx', `RX [${data.length}]: ${hex}`);
+  const hexStr = Array.from(data).map(b => b.toString(16).toUpperCase().padStart(2,'0')).join(' ');
+  log('rx', `RX [${data.length}]: ${hexStr}`);
 
-  // Ignore known noise
-  if (data.length >= 2 && data[0] === 0xF9) return; // ping ack
+  // Ignore control noise
+  if (data.length >= 1 && data[0] === 0xF9) return; // ping ack
   if (data.length >= 1 && data[0] === 0x02) return;  // version reply
   if (data.length >= 2 && data[0] === 0x07) return;  // mode reply
 
-  // Scan response for our VREG 0xEDA9
-  // In response the VREG appears as CBOR: 19 ED A9 followed by the value
-  // Look for the pattern: 0x19 0xED 0xA9 <value_byte>
+  // Packet structure: [len] [type] [payload...]
+  //   type=0x00 = direct GET response  → reliable mode value follows VREG id
+  //   type=0x03 = periodic stream push → value after VREG id is load voltage, NOT mode
+  //
+  // Only read mode from type=0x00 (direct GET response).
+  // In stream packets (type=0x03) the value bytes after 19 ED A9 are CBOR-encoded
+  // load output voltage (un16, 10mV), not the mode register (un8, 0-6).
+
+  if (data.length < 4) return;
+
+  const pktType = data[1];
+
+  // Scan for VREG 0xEDA9 identifier: CBOR uint16 prefix [19] [ED] [A9]
   for (let i = 0; i < data.length - 3; i++) {
     if (data[i] === 0x19 && data[i+1] === 0xED && data[i+2] === 0xA9) {
+
+      if (pktType !== 0x00) {
+        // Stream packet — value is NOT the mode, skip silently
+        return;
+      }
+
+      // Direct GET response — byte immediately after register ID is the mode value
       const val = data[i+3];
+      if (val > 6) return; // sanity check: valid modes are 0-6 only
+
       const isOn  = val === 0x06;
       const isOff = val === 0x00;
-      const names = {0x00:'Always Off', 0x01:'BatteryLife', 0x02:'Conv.Alg.1',
-                     0x03:'Conv.Alg.2', 0x04:'User Def.1', 0x05:'User Def.2', 0x06:'Always On'};
-      const name = names[val] || `0x${val.toString(16).toUpperCase()}`;
+      const names = {0:'Always Off', 1:'BatteryLife', 2:'Conv.Alg.1',
+                     3:'Conv.Alg.2', 4:'User Def.1', 5:'User Def.2', 6:'Always On'};
       setBadge(isOn ? 'deployed' : isOff ? 'recalled' : 'unk');
-      log('ok', isOn ? 'Vehicle systems powered ON.' : isOff ? 'Vehicle systems powered OFF.' : `Power mode: ${name}`);
+      log('ok', isOn ? 'Vehicle systems powered ON.'
+                     : isOff ? 'Vehicle systems powered OFF.'
+                     : `Power mode: ${names[val]}`);
       document.getElementById('btnOn').classList.toggle('active', isOn);
       document.getElementById('btnOff').classList.toggle('active', isOff);
       return;

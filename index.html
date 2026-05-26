@@ -329,6 +329,7 @@ const FRAME = {
   subscribe2: b(0x81,0x19,0xEC,0xDC, 0x05,0x00,0x81,0x19,0xEC,0xEB, 0x05,0x00,0x81,0x19,0xEC,0xED, 0x05,0x00,0x81,0x19),
   subscribe3: b(0x18,0x90, 0x05,0x00,0x81,0x19,0xEC,0x5A, 0x05,0x00,0x81,0x19,0xED,0xD3, 0x05,0x00,0x81,0x19,0xED,0xAA),
   subscribe4: b(0x05,0x00,0x81,0x19,0xED,0xAB, 0x05,0x00,0x81,0x19,0xED,0xAD, 0x05,0x00,0x81,0x19,0xED,0xBD),
+  subscribe5: b(0x05,0x03,0x81,0x19,0x10,0x4F),
 };
 
 // ─── REGISTER MAP ─────────────────────────────────────────────────────────────
@@ -451,7 +452,8 @@ async function runHandshake() {
     await writeBULK(FRAME.subscribe1); await delay(150);
     await writeBULK(FRAME.subscribe2); await delay(150);
     await writeBULK(FRAME.subscribe3); await delay(150);
-    await writeBULK(FRAME.subscribe4); await delay(200);
+    await writeBULK(FRAME.subscribe4); await delay(150);
+    await writeRX(FRAME.subscribe5); await delay(200);
     handshakeDone=true;
     log('ok','Session open. Telemetry active.');
     setPowerEnabled(true);
@@ -635,6 +637,28 @@ function parseResponse(data){
   // type=0x00 = direct GET response (only used for load mode)
   // type=0x03 = periodic stream push (real telemetry values)
   // type=0x00 with value=1 for all other regs = subscription ACK — ignore for telemetry
+
+  // Special handling for 0x104F summary packet (PV power at payload[6:8])
+  for(let i=0;i<data.length-5;i++){
+    if(data[i]===0x19 && data[i+1]===0x10 && data[i+2]===0x4F){
+      // Next bytes: CBOR byte_string header — 0x58 len or 0x4X len
+      let payloadStart = i+3;
+      const hdr = data[payloadStart];
+      if((hdr&0xe0)===0x40){ // byte_string
+        const blen = hdr&0x1f;
+        if(blen===0x18){ payloadStart+=2; } // 1-byte length follows
+        else { payloadStart+=1; }
+        // PV power is at bytes 6-7 of payload (uint16 LE), in watts
+        if(payloadStart+8 <= data.length){
+          const pvW = data[payloadStart+6] | (data[payloadStart+7]<<8);
+          if(pvW > 0 && pvW < 10000){
+            updateTelem('pv-power', pvW, pvW);
+          }
+        }
+      }
+      break;
+    }
+  }
 
   // Scan for VREG patterns
   for(let i=0;i<data.length-2;i++){

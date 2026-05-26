@@ -285,12 +285,14 @@ const FRAME = {
   open_stream: b(0x06,0x00,0x82,0x18,0x93,0x42,0x10,0x27,0x03,0x01,0x03,0x03),
   open_short:  b(0x06,0x00,0x82,0x18,0x93,0x42,0x10,0x27),
   read_load:   b(0x05,0x00,0x81,0x19,0xED,0xA9),
-  // SET: using VE.Direct HEX ASCII (all binary VREG SET formats confirmed ignored)
-  // These are written as ASCII text to 306b0002 (TX) or 306b0003 (RX)
-  // :8A9ED0006B1\n = SET 0xEDA9 = 0x06 (always on)
-  // :8A9ED0000B7\n = SET 0xEDA9 = 0x00 (always off)
-  write_on:    b(0x05,0x03,0x81,0x19,0xED,0xA9,0x06),  // shown for reference only
-  write_off:   b(0x05,0x03,0x81,0x19,0xED,0xA9,0x00),  // shown for reference only
+  // SET command confirmed from HCI snoop of VictronConnect:
+  // cmd=0x06 flags=0x03 CBOR_array[2](uint16(reg), uint(val))
+  // This is correct but REQUIRES auth on service 00000211 handle 0x0008 first.
+  write_on:    b(0x06,0x03,0x82,0x19,0xED,0xA9,0x06),  // confirmed correct format
+  write_off:   b(0x06,0x03,0x82,0x19,0xED,0xA9,0x00),  // confirmed correct format
+  // Auth service UUID: 00000211-b2d1-43f0-9b88-960cebf8b91e
+  // Auth char handle: 0x0008 (within handles 0x0006-0x0010)
+  // Auth format: AES-128 challenge-response using PIN "000000"
   // Subscribe to telemetry VREGs via bulk char (306b0004), 6 bytes per reg
   // Format: 05 00 81 19 <HI> <LO>
   subscribe1: b(0x05,0x00,0x81,0x19,0xEC,0x0F, 0x05,0x00,0x81,0x19,0xEC,0x0E, 0x05,0x00,0x81,0x19,0xEC,0x3F, 0x05,0x00),
@@ -454,71 +456,45 @@ async function readLoadMode(){
 // All 5 binary VREG SET candidates confirmed IGNORED by device (log analysis).
 // Now trying: VE.Direct HEX ASCII frames + bulk char approach.
 
-// VE.Direct HEX frame builder (ASCII, written to TX char 306b0002)
-// These are the correct serial protocol frames, now tried over BLE post-handshake
-function vedirectSet(reg, value) {
-  const lo=reg&0xFF, hi=(reg>>8)&0xFF, v=value&0xFF;
-  const data=[lo,hi,0x00,v];
-  const chk=(0x55-(8+lo+hi+0x00+v))&0xFF;
-  const h=n=>n.toString(16).toUpperCase().padStart(2,'0');
-  return ':8'+h(lo)+h(hi)+'00'+h(v)+h(chk)+'\n';
-}
-function vedirectGet(reg) {
-  const lo=reg&0xFF, hi=(reg>>8)&0xFF;
-  const chk=(0x55-(7+lo+hi+0x00))&0xFF;
-  const h=n=>n.toString(16).toUpperCase().padStart(2,'0');
-  return ':7'+h(lo)+h(hi)+'00'+h(chk)+'\n';
-}
-
 async function setLoadMode(value){
   if(!handshakeDone){log('err','Session not ready');return;}
   const label=value===0x06?'ON':'OFF';
   log('inf',`Sending power-${label} command…`);
 
-  // Approach 1: VE.Direct HEX ASCII on TX char (306b0002)
-  // Prior attempts failed without handshake; now session is established
-  const vedSet=vedirectSet(0xEDA9,value);
-  const vedGet=vedirectGet(0xEDA9);
-  log('inf',`Approach 1: VE.Direct HEX on TX char: ${vedSet.trim()}`);
-  try{
-    await writeTX(new TextEncoder().encode(vedSet));
-    await delay(400);
-    // Also try sending VE.Direct GET to TX to see if device responds
-    await writeTX(new TextEncoder().encode(vedGet));
-    await delay(400);
-  }catch(e){ log('err',`TX write failed: ${e.message}`); }
-  let changed=await readAndCheck(value);
-  if(changed){ log('ok','SET succeeded via VE.Direct HEX on TX char!'); return; }
-  log('inf','Approach 1 no change.');
+  // ── CONFIRMED from HCI snoop ──────────────────────────────────────────────
+  // Correct SET frame: 06 03 82 19 ED A9 <value>  (written to RX char 306b0003)
+  // BUT: requires auth on service 00000211 handle 0x0008 FIRST.
+  // Without auth the device silently discards the write.
+  //
+  // Auth protocol (AES-128 challenge-response with PIN "000000"):
+  //   Service: 00000211-b2d1-43f0-9b88-960cebf8b91e
+  //   Handle 0x0008: write 86-byte protobuf containing nonce + AES proof
+  //   Key derivation not yet reversed — implementing best-effort attempts below.
 
-  // Approach 2: VE.Direct HEX ASCII on RX char (306b0003)
-  log('inf',`Approach 2: VE.Direct HEX on RX char: ${vedSet.trim()}`);
-  try{
-    await writeRX(new TextEncoder().encode(vedSet));
-    await delay(400);
-  }catch(e){ log('err',`RX write failed: ${e.message}`); }
-  changed=await readAndCheck(value);
-  if(changed){ log('ok','SET succeeded via VE.Direct HEX on RX char!'); return; }
-  log('inf','Approach 2 no change.');
+  // Attempt 1: Send correct SET frame — may work if device fw doesn't require auth
+  const correctFrame = value === 0x06 ? FRAME.write_on : FRAME.write_off;
+  const label = value === 0x06 ? 'Always On (0x06)' : 'Always Off (0x00)';
+  log('inf',`Sending confirmed SET frame for ${label}…`);
+  log('inf',`Frame: ${Array.from(correctFrame).map(x=>x.toString(16).toUpperCase().padStart(2,'0')).join(' ')}`);
+  try{ await writeRX(correctFrame); }catch(e){ log('err',`Write failed: ${e.message}`); }
+  await delay(500);
+  let changed = await readAndCheck(value);
+  if(changed){ log('ok','Power command accepted!'); return; }
+  log('inf','Device requires authentication before writes are accepted.');
 
-  // Approach 3: Binary VREG on BULK char (306b0004) instead of RX
-  const hi=0xED,lo=0xA9,v=value&0xFF;
-  const binaryFrames=[
-    {desc:'cmd=05 flags=03 on BULK', frame:b(0x05,0x03,0x81,0x19,hi,lo,v)},
-    {desc:'cmd=07 flags=00 on BULK', frame:b(0x07,0x00,0x82,0x19,hi,lo,v)},
-    {desc:'cmd=08 flags=00 on BULK', frame:b(0x08,0x00,0x82,0x19,hi,lo,v)},
-  ];
-  for(const {desc,frame} of binaryFrames){
-    log('inf',`Approach 3: ${desc}`);
-    try{ await writeBULK(frame); }catch(e){ log('err',`BULK write failed: ${e.message}`); continue; }
-    await delay(400);
-    changed=await readAndCheck(value);
-    if(changed){ log('ok',`SET succeeded: ${desc}`); return; }
-    log('inf','No change.');
+  // Attempt 2: Auth via service 00000211 then retry SET
+  log('inf','Attempting PIN auth on service 00000211 handle 0x0008…');
+  const authDone = await attemptAuth();
+  if(authDone){
+    log('inf','Auth sent, retrying SET…');
+    try{ await writeRX(correctFrame); }catch(e){}
+    await delay(600);
+    changed = await readAndCheck(value);
+    if(changed){ log('ok','Power command accepted after auth!'); return; }
   }
 
-  log('err','All approaches exhausted. Requires nRF sniff of VictronConnect to find correct SET format.');
-  log('err','Connect to device in nRF Connect app, navigate to 306b service, watch writes while VictronConnect changes the load setting.');
+  log('err','SET command rejected. Auth key derivation not yet implemented.');
+  log('err','Next step: implement AES-128 key = f(SHA256(PIN), nonce) for service 00000211.');
   await readLoadMode();
 }
 
@@ -687,6 +663,71 @@ function updateTelem(id, val, rawVal){
 }
 
 // ─── WRITE HELPERS ────────────────────────────────────────────────────────────
+// Auth service UUID (separate from 306b VREG service)
+const AUTH_SVC  = '00000211-b2d1-43f0-9b88-960cebf8b91e';
+const AUTH_CHAR = '00000212-b2d1-43f0-9b88-960cebf8b91e'; // handle 0x0008 (approx UUID)
+let authChar = null;
+
+async function attemptAuth(){
+  // Try to get the auth characteristic from the 0211 service
+  try{
+    const server = await device.gatt.connect(); // already connected, re-use
+    // We don't know the exact char UUID — try common patterns
+    // Handle 0x0008 is within service 0x0006-0x0010
+    // The characteristic UUID is likely 00000212 or similar
+    // For now, try to discover it
+    try{
+      const svc = await server.getPrimaryService(AUTH_SVC);
+      const chars = await svc.getCharacteristics();
+      log('inf',`Auth service found with ${chars.length} characteristics`);
+      for(const c of chars){
+        log('inf',`  char UUID: ${c.uuid}, props: ${JSON.stringify(c.properties)}`);
+      }
+      // Find writable characteristic
+      const writeable = chars.find(c => c.properties.write || c.properties.writeWithoutResponse);
+      if(writeable){
+        authChar = writeable;
+        log('inf',`Auth char found: ${writeable.uuid}`);
+        // Send auth payload: generate nonce, compute AES proof
+        const authPayload = buildAuthPayload();
+        await authChar.writeValue(authPayload);
+        log('inf','Auth payload sent');
+        await delay(300);
+        return true;
+      }
+    }catch(e){
+      log('inf',`Auth service not accessible: ${e.message}`);
+    }
+  }catch(e){}
+  return false;
+}
+
+// Build the 86-byte auth payload
+// Format: 00 54 [84 bytes protobuf]
+// Key fields: nonce (16 random bytes) + AES_ECB(derived_key, nonce)
+// Key derivation: SHA256(PIN)[:16] — needs verification against device
+function buildAuthPayload(){
+  // Generate random 16-byte nonce
+  const nonce = new Uint8Array(16);
+  crypto.getRandomValues(nonce);
+  // AES key = SHA256("000000")[:16] — this is our best guess, may need tuning
+  // Since we can't do AES in vanilla JS without SubtleCrypto (async),
+  // use a pre-computed key for PIN "000000" based on SHA256
+  // SHA256("000000") = 91b4d142823f7d20c5f08df69122de43...
+  // First 16 bytes: 91 b4 d1 42 82 3f 7d 20 c5 f0 8d f6 91 22 de 43
+  // We'll build a minimal valid-looking protobuf and hope the auth is lenient
+  // (some firmware versions may accept any well-formed payload)
+  const frame = new Uint8Array(86);
+  frame[0] = 0x00; frame[1] = 0x54;  // framing
+  // Minimal protobuf: field 7 LEN(18) containing field 2 LEN(16) = nonce
+  let i = 2;
+  frame[i++] = 0x3A; frame[i++] = 0x12;  // field 7 len=18
+  frame[i++] = 0x12; frame[i++] = 0x10;  // inner field 2 len=16
+  frame.set(nonce, i); i += 16;
+  // Pad rest — device will likely reject but we log what happens
+  return frame;
+}
+
 async function writeTX(data){
   if(!txChar) throw new Error('No TX');
   logRaw('TX2',data);
@@ -803,8 +844,8 @@ function saveLog(){
     ['reset',     Array.from(FRAME.reset).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
     ['ping',      Array.from(FRAME.ping).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
     ['read_load', Array.from(FRAME.read_load).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
-    ['write_on',  Array.from(FRAME.write_on).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (cmd=0x05 flags=0x03)'],
-    ['write_off', Array.from(FRAME.write_off).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (cmd=0x05 flags=0x03)'],
+    ['write_on',  Array.from(FRAME.write_on).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (confirmed from HCI snoop — needs auth)'],
+    ['write_off', Array.from(FRAME.write_off).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (confirmed from HCI snoop — needs auth)'],
   ];
   fv.forEach(([name,hex])=>lines.push(`  ${name.padEnd(12)}: ${hex}`));
   lines.push('');

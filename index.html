@@ -365,22 +365,31 @@ let keepaliveTimer=null, handshakeDone=false;
 // ─── SCAN & CONNECT ───────────────────────────────────────────────────────────
 async function startScan() {
   if (!navigator.bluetooth) { log('err','Web Bluetooth not available. Use Chrome.'); return; }
+  // requestDevice() MUST be the first await after the user gesture.
+  // Any DOM writes or async ops before it will silently block the picker in Chrome.
+  let device;
   try {
-    setScanState(true);
-    log('inf','Opening scanner — select a Warden vehicle…');
-    const device = await navigator.bluetooth.requestDevice({
-      // Cast a wide net — SmartSolar may advertise by name or manufacturer data,
-      // not always by service UUID. User picks from the OS device list.
+    device = await navigator.bluetooth.requestDevice({
       filters: [
-        { services: [SVC] },           // devices that advertise the 306b service
+        { services: [SVC] },
         { namePrefix: 'SmartSolar' },
         { namePrefix: 'SolarCharger' },
         { namePrefix: 'Warden' },
-        { namePrefix: 'HQ' },          // Victron serial numbers start with HQ
-        { namePrefix: 'SCC' },         // another common prefix
+        { namePrefix: 'HQ' },
+        { namePrefix: 'SCC' },
+        { namePrefix: 'BlueSolar' },
       ],
       optionalServices: [SVC],
     });
+  } catch(e) {
+    if (e.name !== 'NotFoundError') log('err', `Scan error: ${e.message}`);
+    else log('inf', 'Scan cancelled.');
+    setScanState(false);
+    return;
+  }
+  try {
+    setScanState(true);
+    log('inf','Opening scanner — select a Warden vehicle…');
     if (!fleet[device.id]) {
       fleet[device.id]={id:device.id,name:device.name||'Warden ASV',device};
       log('inf',`Discovered: ${fleet[device.id].name}`);
@@ -389,8 +398,7 @@ async function startScan() {
     renderFleet();
     if (!activeId) await connectToDevice(device.id);
   } catch(e) {
-    if (e.name!=='NotFoundError') log('err',`Scan error: ${e.message}`);
-    else log('inf','Scan cancelled.');
+    log('err', `Connect error: ${e.message}`);
   } finally { setScanState(false); }
 }
 

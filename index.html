@@ -329,7 +329,7 @@ const FRAME = {
   subscribe2: b(0x81,0x19,0xEC,0xDC, 0x05,0x00,0x81,0x19,0xEC,0xEB, 0x05,0x00,0x81,0x19,0xEC,0xED, 0x05,0x00,0x81,0x19),
   subscribe3: b(0x18,0x90, 0x05,0x00,0x81,0x19,0xEC,0x5A, 0x05,0x00,0x81,0x19,0xED,0xD3, 0x05,0x00,0x81,0x19,0xED,0xAA),
   subscribe4: b(0x05,0x00,0x81,0x19,0xED,0xAB, 0x05,0x00,0x81,0x19,0xED,0xAD, 0x05,0x00,0x81,0x19,0xED,0xBD),
-  subscribe5: b(0x05,0x03,0x81,0x19,0x10,0x4F),
+  subscribe5: b(0x05,0x03,0x81,0x19,0x10,0x4F, 0x05,0x03,0x81,0x19,0xEC,0x8A, 0x05,0x03,0x81,0x19,0xED,0xBC),
 };
 
 // ─── REGISTER MAP ─────────────────────────────────────────────────────────────
@@ -339,9 +339,10 @@ const FRAME = {
 const VREG_MAP = {
   0xED8D: ['bat-v',        0.01, false],  // Battery voltage ✓ streaming
   0xEDBB: ['pv-v',         0.01, false],  // Panel voltage ✓ streaming
-  0xEDBD: ['pv-power',     1.0,  false],  // Panel power W (un16)
-  0xECED: ['pv-power',     1.0,  true ],  // PV power from VE.Can (sn16)
-  0x1890: ['pv-power',     1.0,  false],  // Solar power W (short encoding, low-res)
+  0xEC8A: ['pv-power',     1.0,  false],  // PV power W ✓ confirmed 15-16W
+  0xEDBC: ['pv-power',     0.01, false],  // PV power alternate (×0.01 = W)
+  0xEDBD: ['pv-power',     1.0,  false],  // Panel power W fallback
+  0x1890: ['pv-power',     1.0,  false],  // Solar power W (low-res, last resort)
   0x0200: ['charger-state',1.0,  false],  // Charger state ✓ streaming
   0x0202: ['charger-err',  1.0,  false],  // Charger error (suppressed in display)
   0x0150: ['uptime',       1.0,  false],  // Uptime ✓ streaming
@@ -637,28 +638,6 @@ function parseResponse(data){
   // type=0x00 = direct GET response (only used for load mode)
   // type=0x03 = periodic stream push (real telemetry values)
   // type=0x00 with value=1 for all other regs = subscription ACK — ignore for telemetry
-
-  // Special handling for 0x104F summary packet (PV power at payload[6:8])
-  for(let i=0;i<data.length-5;i++){
-    if(data[i]===0x19 && data[i+1]===0x10 && data[i+2]===0x4F){
-      // Next bytes: CBOR byte_string header — 0x58 len or 0x4X len
-      let payloadStart = i+3;
-      const hdr = data[payloadStart];
-      if((hdr&0xe0)===0x40){ // byte_string
-        const blen = hdr&0x1f;
-        if(blen===0x18){ payloadStart+=2; } // 1-byte length follows
-        else { payloadStart+=1; }
-        // PV power is at bytes 6-7 of payload (uint16 LE), in watts
-        if(payloadStart+8 <= data.length){
-          const pvW = data[payloadStart+6] | (data[payloadStart+7]<<8);
-          if(pvW > 0 && pvW < 10000){
-            updateTelem('pv-power', pvW, pvW);
-          }
-        }
-      }
-      break;
-    }
-  }
 
   // Scan for VREG patterns
   for(let i=0;i<data.length-2;i++){

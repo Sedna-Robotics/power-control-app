@@ -490,11 +490,15 @@ async function runHandshake() {
     handshakeDone=true;
     log('ok','Session open. Telemetry active.');
     setPowerEnabled(true);
-    // Read custom name (0x0110) — user-set name from VictronConnect
-    // Falls back to serial (0x010A) if not set (response = 0xFFFFFFFE)
-    try { await writeRX(b(0x05,0x00,0x81,0x19,0x01,0x10)); } catch(e){}
-    await delay(100);
-    try { await writeRX(b(0x05,0x00,0x81,0x19,0x01,0x0A)); } catch(e){}
+    // Read custom name — confirmed from HCI snoop:
+    // 0x010C streams the user-set device name (e.g. "Warden-0")
+    // 0x0110 = custom name register (0xFFFFFFFE if unset)
+    // 0x010A = serial number fallback
+    try { await writeRX(b(0x05,0x03,0x81,0x19,0x01,0x0C)); } catch(e){} // subscribe name stream
+    await delay(50);
+    try { await writeRX(b(0x05,0x00,0x81,0x19,0x01,0x10)); } catch(e){} // read custom name reg
+    await delay(50);
+    try { await writeRX(b(0x05,0x00,0x81,0x19,0x01,0x0A)); } catch(e){} // read serial fallback
     document.getElementById('telemPanel').style.display='';
     startKeepalive();
     await delay(300); await readLoadMode();
@@ -594,7 +598,7 @@ function tryParseCustomName(data){
   for(let i=0; i<data.length-3; i++){
     if(data[i]!==0x19) continue;
     const reg=(data[i+1]<<8)|data[i+2];
-    if(reg!==0x0110 && reg!==0x010A) continue;
+    if(reg!==0x010C && reg!==0x0110 && reg!==0x010A) continue;
     const valByte=data[i+3];
     const major=(valByte>>5)&7;
     const len=valByte&0x1f;

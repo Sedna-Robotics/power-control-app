@@ -218,38 +218,16 @@
             <div class="telem-value stale" id="val-pv-power">—<span class="telem-unit">W</span></div>
           </div>
           <div style="text-align:right">
-            <div class="telem-label">Yield Today</div>
-            <div class="telem-value stale" id="val-yield" style="font-size:16px">—<span class="telem-unit">kWh</span></div>
+            <div class="telem-label">Uptime</div>
+            <div style="font-family:var(--mono);font-size:13px;color:var(--text-dim)" id="val-uptime">—</div>
           </div>
         </div>
         <div class="telem-card" id="card-pv-v">
           <div class="telem-label">Panel Voltage</div>
           <div class="telem-value stale" id="val-pv-v">—<span class="telem-unit">V</span></div>
         </div>
-        <div class="telem-card" id="card-pv-a">
-          <div class="telem-label">Panel Current</div>
-          <div class="telem-value stale" id="val-pv-a">—<span class="telem-unit">A</span></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="telem-section">
-      <div class="telem-section-label">Battery</div>
-      <div class="telem-grid">
-        <div class="telem-card" id="card-bat-v">
-          <div class="telem-label">Voltage</div>
-          <div class="telem-value stale" id="val-bat-v">—<span class="telem-unit">V</span></div>
-        </div>
-        <div class="telem-card" id="card-bat-a">
-          <div class="telem-label">Current</div>
-          <div class="telem-value stale" id="val-bat-a">—<span class="telem-unit">A</span></div>
-        </div>
-        <div class="telem-card big" id="card-bat-w">
-          <div>
-            <div class="telem-label">Charge Power</div>
-            <div class="telem-value stale" id="val-bat-w">—<span class="telem-unit">W</span></div>
-          </div>
-          <div id="chargerStateWrap" style="text-align:right">
+        <div class="telem-card" style="display:flex;align-items:center;justify-content:center">
+          <div style="text-align:center">
             <div class="telem-label">Charger</div>
             <div class="charger-state" id="val-charger-state">—</div>
           </div>
@@ -258,24 +236,16 @@
     </div>
 
     <div class="telem-section">
-      <div class="telem-section-label">Load Output</div>
+      <div class="telem-section-label">Battery</div>
       <div class="telem-grid">
-        <div class="telem-card" id="card-load-v">
-          <div class="telem-label">Voltage</div>
-          <div class="telem-value stale" id="val-load-v">—<span class="telem-unit">V</span></div>
-        </div>
-        <div class="telem-card" id="card-load-a">
-          <div class="telem-label">Current</div>
-          <div class="telem-value stale" id="val-load-a">—<span class="telem-unit">A</span></div>
-        </div>
-        <div class="telem-card big" id="card-load-state">
+        <div class="telem-card big" id="card-bat-v">
           <div>
-            <div class="telem-label">State</div>
-            <span class="load-state" id="load-state-pill">unknown</span>
+            <div class="telem-label">Voltage</div>
+            <div class="telem-value stale" id="val-bat-v">—<span class="telem-unit">V</span></div>
           </div>
           <div style="text-align:right">
-            <div class="telem-label">Temperature</div>
-            <div class="telem-value stale" id="val-temp" style="font-size:16px">—<span class="telem-unit">°C</span></div>
+            <div class="telem-label">Error</div>
+            <div style="font-family:var(--mono);font-size:11px;color:var(--text-muted);max-width:130px;text-align:right;line-height:1.3" id="val-charger-err">—</div>
           </div>
         </div>
       </div>
@@ -315,8 +285,10 @@ const FRAME = {
   open_stream: b(0x06,0x00,0x82,0x18,0x93,0x42,0x10,0x27,0x03,0x01,0x03,0x03),
   open_short:  b(0x06,0x00,0x82,0x18,0x93,0x42,0x10,0x27),
   read_load:   b(0x05,0x00,0x81,0x19,0xED,0xA9),
-  write_on:    b(0x06,0x00,0x82,0x19,0xED,0xA9,0x06),
-  write_off:   b(0x06,0x00,0x82,0x19,0xED,0xA9,0x00),
+  // SET command: cmd=0x08, CBOR array[2] = [uint16(reg), uint(value)]
+  // cmd=0x06 is "open attribute stream" not SET — corrected from analysis of log.
+  write_on:    b(0x08,0x00,0x82,0x19,0xED,0xA9,0x06),
+  write_off:   b(0x08,0x00,0x82,0x19,0xED,0xA9,0x00),
   // Subscribe to telemetry VREGs via bulk char (306b0004), 6 bytes per reg
   // Format: 05 00 81 19 <HI> <LO>
   subscribe1: b(0x05,0x00,0x81,0x19,0xEC,0x0F, 0x05,0x00,0x81,0x19,0xEC,0x0E, 0x05,0x00,0x81,0x19,0xEC,0x3F, 0x05,0x00),
@@ -326,23 +298,39 @@ const FRAME = {
 };
 
 // ─── REGISTER MAP ─────────────────────────────────────────────────────────────
-// [label, scale, signed, display_id, unit]
+// Registers confirmed streaming from type=0x03 packets (verified from log).
+// Format: [display_id, scale, signed]
+// Only registers seen in actual stream packets are included.
 const VREG_MAP = {
-  0xEC0F: ['bat-v',  0.01, false],
-  0xEC0E: ['bat-a',  0.1,  true ],
-  0xEC3F: ['bat-w',  1.0,  true ],
-  0xECDC: ['pv-v',   0.01, false],
-  0xECEB: ['pv-a',   0.1,  true ],
-  0xECED: ['pv-w',   1.0,  true ],
-  0x1890: ['pv-power',1.0, false],
-  0xEC5A: ['temp',   0.01, true ],   // Kelvin, convert to °C
-  0xEDD3: ['yield',  0.01, false],
-  0xEDAA: ['load-v', 0.01, false],
-  0xEDAB: ['load-a', 0.1,  true ],
-  0xEDAD: ['load-state', 1.0, false],
+  0xED8D: ['bat-v',        0.01, false],  // Battery voltage (mV×0.01→V) ✓ streaming
+  0xEDBB: ['pv-v',         0.01, false],  // Panel voltage ✓ streaming
+  0x0200: ['charger-state',1.0,  false],  // Charger state ✓ streaming
+  0x0202: ['charger-err',  1.0,  false],  // Charger error code ✓ streaming
+  0x1890: ['pv-power',     1.0,  false],  // Solar power W ✓ streaming (short encoding)
+  0x0150: ['uptime',       1.0,  false],  // Uptime seconds ✓ streaming
+  0x010E: ['dev-mode',     1.0,  false],  // Device mode ✓ streaming
+  // Not streaming in this firmware — kept for future:
+  // 0xECDC: ['pv-v', 0.01, false],
+  // 0xEC0F: ['bat-v', 0.01, false],
 };
 
-const CHARGER_STATES = ['Off','Low power','Fault','Bulk','Absorption','Float','Storage','Equalize (manual)','Inverting','','Power supply'];
+const CHARGER_STATES = {
+  0:'Off', 1:'Low power', 2:'Fault', 3:'Bulk',
+  4:'Absorption', 5:'Float', 6:'Storage', 9:'Inverting', 11:'Power supply'
+};
+const CHARGER_ERRORS = {
+  0:'No error', 1:'Battery temperature too high', 2:'Battery voltage too high',
+  3:'Remote temperature sensor failure', 4:'Remote temperature sensor failure',
+  5:'Remote temperature sensor failure', 6:'Remote battery voltage sense failure',
+  7:'Remote battery voltage sense failure', 8:'Remote battery voltage sense failure',
+  17:'Charger temperature too high', 18:'Charger over-current', 19:'Charger current polarity reversed',
+  20:'Bulk time limit exceeded', 21:'Current sensor issue', 26:'Terminals overheated',
+  28:'Converter issue', 33:'Input voltage too high (solar panel)', 34:'Input current too high',
+  38:'Input shutdown (excessive battery voltage)', 39:'Input shutdown (battery voltage too high)',
+  65:'Lost communication', 66:'Incompatible device', 67:'BMS connection lost',
+  68:'Network misconfigured', 116:'Factory calibration lost', 117:'Invalid or missing calibration data',
+  119:'Settings data lost', 121:'Non-volatile storage write error',
+};
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 let fleet={}, activeId=null, txChar=null, rxChar=null, bulkChar=null;
@@ -513,69 +501,99 @@ function parseResponse(data){
 
   const pktType=data[1];
 
-  // Scan for VREG pattern: 0x19 <HI> <LO>
-  for(let i=0;i<data.length-2;i++){
-    if(data[i]!==0x19) continue;
-    const reg=(data[i+1]<<8)|data[i+2];
-    const [rawVal, nextI]=parseCborValue(data,i+3);
-    if(rawVal===null) continue;
+  // type=0x00 = direct GET response (only used for load mode)
+  // type=0x03 = periodic stream push (real telemetry values)
+  // type=0x00 with value=1 for all other regs = subscription ACK — ignore for telemetry
 
-    // Load mode register — only from type=0x00 (direct GET response)
-    if(reg===0xEDA9 && pktType===0x00 && rawVal>=0 && rawVal<=6){
-      const isOn=rawVal===0x06, isOff=rawVal===0x00;
-      const names={0:'Always Off',1:'BatteryLife',2:'Conv.Alg.1',3:'Conv.Alg.2',4:'User Def.1',5:'User Def.2',6:'Always On'};
-      setBadge(isOn?'deployed':isOff?'recalled':'unk');
-      log('ok',isOn?'Vehicle systems powered ON.':isOff?'Vehicle systems powered OFF.':`Power mode: ${names[rawVal]}`);
-      document.getElementById('btnOn').classList.toggle('active',isOn);
-      document.getElementById('btnOff').classList.toggle('active',isOff);
-      return;
+  // Scan for VREG patterns
+  for(let i=0;i<data.length-2;i++){
+
+    // Standard VREG: 0x19 <HI> <LO> (uint16 register address)
+    if(data[i]===0x19){
+      const reg=(data[i+1]<<8)|data[i+2];
+      const [rawVal, nextI]=parseCborValue(data,i+3);
+      if(rawVal===null){i++;continue;}
+
+      // Load mode: only from direct GET response (type=0x00)
+      if(reg===0xEDA9 && pktType===0x00 && rawVal>=0 && rawVal<=6){
+        const isOn=rawVal===0x06, isOff=rawVal===0x00;
+        const names={0:'Always Off',1:'BatteryLife',2:'Conv.Alg.1',3:'Conv.Alg.2',4:'User Def.1',5:'User Def.2',6:'Always On'};
+        setBadge(isOn?'deployed':isOff?'recalled':'unk');
+        log('ok',isOn?'Vehicle systems powered ON.':isOff?'Vehicle systems powered OFF.':`Power mode: ${names[rawVal]}`);
+        document.getElementById('btnOn').classList.toggle('active',isOn);
+        document.getElementById('btnOff').classList.toggle('active',isOff);
+        i=nextI-1; continue;
+      }
+
+      // Telemetry: only from stream packets (type=0x03)
+      // type=0x00 returns ACK value=1 for all registers — must ignore
+      if(pktType===0x03){
+        const info=VREG_MAP[reg];
+        if(info){
+          const [displayId,scale,signed]=info;
+          const val=signed?(rawVal>32767?rawVal-65536:rawVal)*scale:rawVal*scale;
+          updateTelem(displayId,val,rawVal);
+        }
+      }
+      i=nextI-1; continue;
     }
 
-    // Telemetry registers — from stream packets (type=0x03) or any other
-    const info=VREG_MAP[reg];
-    if(!info) continue;
-    const [displayId, scale, signed]=info;
-    let val=signed?(rawVal>32767?rawVal-65536:rawVal):rawVal;
-    val=val*scale;
-
-    // Special conversions
-    if(displayId==='temp') val=val-273.15; // Kelvin to Celsius
-    if(displayId==='yield') val=val/1000;  // Wh to kWh (if scale was 0.01 Wh → 0.01/1000 kWh? already handled)
-
-    updateTelem(displayId, val, reg);
+    // Short VREG encoding: 0x18 <LO> (uint8 register address, for regs 0x00-0xFF)
+    // e.g. 0x1890 comes as: 18 90 <value>  NOT  19 18 90 <value>
+    if(data[i]===0x18 && i+1<data.length){
+      const reg=(0x18<<8)|data[i+1];
+      const [rawVal, nextI]=parseCborValue(data,i+2);
+      if(rawVal!==null && pktType===0x03){
+        const info=VREG_MAP[reg];
+        if(info){
+          const [displayId,scale,signed]=info;
+          const val=signed?(rawVal>32767?rawVal-65536:rawVal)*scale:rawVal*scale;
+          updateTelem(displayId,val,rawVal);
+        }
+      }
+      i=nextI-1; continue;
+    }
   }
 }
 
-function updateTelem(id, val, reg){
-  if(id==='load-state'){
-    const pill=document.getElementById('load-state-pill');
-    if(pill){
-      pill.className='load-state '+(val===1?'on':'off');
-      pill.innerHTML=`<span class="load-dot"></span>${val===1?'Active':'Off'}`;
-    }
+function updateTelem(id, val, rawVal){
+  // Special non-numeric displays
+  if(id==='charger-state'){
+    const el=document.getElementById('val-charger-state');
+    if(el) el.textContent=CHARGER_STATES[rawVal]||`State ${rawVal}`;
     return;
   }
+  if(id==='charger-err'){
+    const el=document.getElementById('val-charger-err');
+    if(!el) return;
+    const errText=CHARGER_ERRORS[rawVal]||`Error ${rawVal}`;
+    el.textContent=rawVal===0?'—':errText;
+    el.style.color=rawVal===0?'var(--text-muted)':'var(--red)';
+    return;
+  }
+  if(id==='uptime'){
+    const el=document.getElementById('val-uptime');
+    if(!el) return;
+    const h=Math.floor(rawVal/3600), m=Math.floor((rawVal%3600)/60), s=rawVal%60;
+    el.textContent=h>0?`${h}h ${m}m`:`${m}m ${s}s`;
+    return;
+  }
+  if(id==='dev-mode'){ return; } // internal, don't display
 
   const el=document.getElementById('val-'+id);
   if(!el) return;
 
   let display, colorClass='';
-  if(id==='pv-power'||id==='bat-w'||id==='pv-w'){
-    display=Math.abs(val)<1000?val.toFixed(0):(val/1000).toFixed(2);
-    const unit=el.querySelector('.telem-unit');
-    if(unit) unit.textContent=Math.abs(val)<1000?'W':'kW';
-    colorClass=val>5?'positive':val<-5?'negative':'';
-  } else if(id==='bat-a'||id==='pv-a'||id==='load-a'){
+  if(id==='pv-power'){
+    display=val.toFixed(0);
+    colorClass=val>5?'positive':'';
+  } else if(id==='bat-v'){
     display=val.toFixed(2);
-    colorClass=val>0.05?'positive':val<-0.05?'negative':'';
-  } else if(id==='bat-v'||id==='pv-v'||id==='load-v'){
+    // Low voltage warning: <22V for 24V system, <11V for 12V
+    colorClass=val<11?'negative':val<12?'warn':'';
+  } else if(id==='pv-v'){
     display=val.toFixed(2);
-    colorClass=val<11.0&&id==='bat-v'?'warn':'';
-  } else if(id==='temp'){
-    display=val.toFixed(1);
-    colorClass=val>50?'warn':val>70?'negative':'';
-  } else if(id==='yield'){
-    display=val.toFixed(3);
+    colorClass=val>1?'positive':'';
   } else {
     display=val.toFixed(1);
   }
@@ -585,7 +603,6 @@ function updateTelem(id, val, reg){
   const unitText=unit?unit.outerHTML:'';
   el.innerHTML=display+unitText;
 
-  // Flash the card
   const card=document.getElementById('card-'+id);
   if(card){card.classList.remove('updated');void card.offsetWidth;card.classList.add('updated');}
 }
@@ -707,8 +724,8 @@ function saveLog(){
     ['reset',     Array.from(FRAME.reset).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
     ['ping',      Array.from(FRAME.ping).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
     ['read_load', Array.from(FRAME.read_load).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
-    ['write_on',  Array.from(FRAME.write_on).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
-    ['write_off', Array.from(FRAME.write_off).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')],
+    ['write_on',  Array.from(FRAME.write_on).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (cmd=0x08=SET)'],
+    ['write_off', Array.from(FRAME.write_off).map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')+'  (cmd=0x08=SET)'],
   ];
   fv.forEach(([name,hex])=>lines.push(`  ${name.padEnd(12)}: ${hex}`));
   lines.push('');

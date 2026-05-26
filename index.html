@@ -195,6 +195,7 @@
       <svg viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1" fill="currentColor"/></svg>
       Scan for Vehicles
     </button>
+    <div id="btDiag" style="display:none;margin-top:8px;background:var(--surface2);border:1px solid var(--border2);border-radius:4px;padding:9px 11px;font-family:var(--mono);font-size:10px;color:var(--text-dim);line-height:1.8"></div>
   </div>
 
   <!-- Power -->
@@ -363,31 +364,63 @@ let fleet={}, activeId=null, txChar=null, rxChar=null, bulkChar=null;
 let keepaliveTimer=null, handshakeDone=false;
 
 // ─── SCAN & CONNECT ───────────────────────────────────────────────────────────
+function diag(msg) {
+  const el = document.getElementById('btDiag');
+  el.style.display = '';
+  el.innerHTML += msg + '<br>';
+  log('inf', msg);
+}
+
 async function startScan() {
-  if (!navigator.bluetooth) { log('err','Web Bluetooth not available. Use Chrome.'); return; }
+  document.getElementById('btDiag').innerHTML = '';
+  diag('Button fired ✓');
+
+  if (!navigator.bluetooth) {
+    diag('❌ navigator.bluetooth is undefined — Web Bluetooth not available');
+    diag('Must use Chrome on Android or desktop (not Firefox, Safari, or WebView)');
+    return;
+  }
+  diag('navigator.bluetooth ✓');
+
+  // Check if the page is on HTTPS or localhost (required for Web Bluetooth)
+  const proto = location.protocol;
+  diag(`Protocol: ${proto} ${proto === 'https:' ? '✓' : '❌ must be https'}`);
+
+  // Check bluetooth availability
+  let available = false;
+  try { available = await navigator.bluetooth.getAvailability(); } catch(e) {}
+  diag(`Bluetooth available: ${available}`);
+
+  if (!available) {
+    diag('❌ Bluetooth is off or unavailable — turn on Bluetooth and try again');
+    return;
+  }
+
   setScanState(true);
+  diag('Calling requestDevice()…');
+
   let device;
   try {
-    // acceptAllDevices shows every nearby BLE device in the picker.
-    // Filtering by service UUID or name prefix silently hides devices
-    // if the SmartSolar isn't advertising those values — use all devices
-    // and let the user pick theirs from the list.
     device = await navigator.bluetooth.requestDevice({
       acceptAllDevices: true,
       optionalServices: [SVC],
     });
+    diag(`Device selected: ${device.name || device.id} ✓`);
   } catch(e) {
     setScanState(false);
-    if (e.name !== 'NotFoundError') log('err', `Scan error: ${e.message}`);
-    else log('inf', 'Scan cancelled.');
+    if (e.name === 'NotFoundError') diag('Picker cancelled by user.');
+    else if (e.name === 'SecurityError') diag(`❌ SecurityError: ${e.message} — page may not be served over HTTPS`);
+    else if (e.name === 'NotSupportedError') diag(`❌ NotSupportedError: ${e.message}`);
+    else diag(`❌ ${e.name}: ${e.message}`);
     return;
   }
+
   try {
     if (!fleet[device.id]) {
-      fleet[device.id]={id:device.id, name:device.name||'Warden ASV', device};
-      log('inf',`Discovered: ${fleet[device.id].name}`);
+      fleet[device.id] = {id:device.id, name:device.name||'Warden ASV', device};
+      log('inf', `Discovered: ${fleet[device.id].name}`);
     }
-    device.addEventListener('gattserverdisconnected',()=>onDisconnected(device.id));
+    device.addEventListener('gattserverdisconnected', ()=>onDisconnected(device.id));
     renderFleet();
     if (!activeId) await connectToDevice(device.id);
   } catch(e) {

@@ -490,8 +490,11 @@ async function runHandshake() {
     handshakeDone=true;
     log('ok','Session open. Telemetry active.');
     setPowerEnabled(true);
-    // Read custom device name (register 0x0900)
-    try { await writeRX(b(0x05,0x00,0x81,0x19,0x09,0x00)); } catch(e){}
+    // Read custom name (0x0110) — user-set name from VictronConnect
+    // Falls back to serial (0x010A) if not set (response = 0xFFFFFFFE)
+    try { await writeRX(b(0x05,0x00,0x81,0x19,0x01,0x10)); } catch(e){}
+    await delay(100);
+    try { await writeRX(b(0x05,0x00,0x81,0x19,0x01,0x0A)); } catch(e){}
     document.getElementById('telemPanel').style.display='';
     startKeepalive();
     await delay(300); await readLoadMode();
@@ -533,9 +536,8 @@ function onDisconnected(id){
 async function readLoadMode(){
   if(!handshakeDone){log('err','Session not ready');return;}
   log('inf','Querying vehicle power state…');
-  try { await writeRX(FRAME.read_status); } catch(e) {} // subscribe 0xEDAB (load state)
-  await delay(100);
-  try { await writeRX(FRAME.read_load); }  catch(e) {} // read 0xEDA9 (mode)
+  try { await writeRX(FRAME.read_status); } catch(e) {} // subscribe 0xEDA8 (physical state)
+  // Don't read 0xEDA9 mode here — it overwrites the physical state badge
 }
 // ── SET command approaches ────────────────────────────────────────────────────
 // All 5 binary VREG SET candidates confirmed IGNORED by device (log analysis).
@@ -588,31 +590,39 @@ function onRxNotify(event){
 }
 
 function tryParseCustomName(data){
-  // Look for pattern: [09|08] 00 19 09 00 [CBOR_string_or_bytes]
-  if(data.length < 6) return;
-  for(let i=0; i<data.length-4; i++){
-    if(data[i]===0x19 && data[i+1]===0x09 && data[i+2]===0x00 && i+3<data.length){
-      // Found register 0x0900 — value follows as CBOR
-      const valByte = data[i+3];
-      // CBOR text string: major=3, CBOR bytes: major=2
-      const major = (valByte >> 5) & 7;
-      const len   = valByte & 0x1f;
-      if((major===3||major===2) && len>0 && i+4+len<=data.length){
-        const nameBytes = data.slice(i+4, i+4+len);
-        const name = new TextDecoder().decode(nameBytes).trim();
-        if(name && activeId && fleet[activeId]){
-          log('ok', `Device name: "${name}"`);
-          // Only set if user hasn't manually renamed it
-          if(!nameMap[activeId]){
-            fleet[activeId].name = name;
-            nameMap[activeId] = name;
-            renderFleet();
-            document.getElementById('connName').textContent = name;
-          }
+  if(data.length < 5) return;
+  for(let i=0; i<data.length-3; i++){
+    if(data[i]!==0x19) continue;
+    const reg=(data[i+1]<<8)|data[i+2];
+    if(reg!==0x0110 && reg!==0x010A) continue;
+    const valByte=data[i+3];
+    const major=(valByte>>5)&7;
+    const len=valByte&0x1f;
+    if((major===2||major===3) && len>0 && i+4+len<=data.length){
+      const nameBytes=data.slice(i+4,i+4+len);
+      // 0x0110: 4-byte sentinel 0xFFFFFFFE or 0xFFFFFFFF means "not set"
+      if(reg===0x0110 && len===4){
+        const v=nameBytes[0]|(nameBytes[1]<<8)|(nameBytes[2]<<16)|(nameBytes[3]<<24);
+        if(v===-2||v===-1||(nameBytes[0]===0xFF&&nameBytes[1]===0xFF)){
+          log('inf','No custom name set on device');
+          return;
         }
       }
-      return;
+      try{
+        const name=new TextDecoder().decode(nameBytes).replace(/\x00/g,'').trim();
+        if(name && name.length>1 && /^[\x20-\x7E]+$/.test(name)){
+          log('ok',`Device name (0x${reg.toString(16).toUpperCase()}): "${name}"`);
+          if(activeId && fleet[activeId] && !nameMap[activeId]){
+            fleet[activeId].name=name;
+            nameMap[activeId]=name;
+            renderFleet();
+            document.getElementById('connName').textContent=name;
+          }
+          return;
+        }
+      }catch(e){}
     }
+    return;
   }
 }
 function onBulkNotify(event){
@@ -689,17 +699,9 @@ function parseResponse(data){
       // 0xEDA9 = Load output CONTROL MODE (0=off, 1=batterylife, 6=always_on)
       // Comes back as type=0x00 (GET response) or type=0x03 stream
       if(reg===0xEDA9 && rawVal>=0 && rawVal<=6){
-        // Accept both type=0x00 (GET response) and type=0x03 (SET response)
-        // Stream packets (type=0x03) for 0xEDA9 encode load voltage not mode,
-        // BUT the SET response also uses type=0x03 with flags=0x03 — distinguish
-        // by value range: mode values 0-6 are valid, voltage would be much larger.
-        const isOn=rawVal===0x06, isOff=rawVal===0x00;
+        // ALGORITHM mode only — do NOT update physical state badge
         const names={0:'Always Off',1:'BatteryLife',2:'Conv.Alg.1',3:'Conv.Alg.2',4:'User Def.1',5:'User Def.2',6:'Always On'};
-        setBadge(isOn?'deployed':isOff?'recalled':'unk');
-        log('ok',isOn?'Vehicle systems powered ON.':isOff?'Vehicle systems powered OFF.':`Power mode: ${names[rawVal]}`);
-        document.getElementById('btnOn').classList.toggle('active',isOn);
-        document.getElementById('btnOff').classList.toggle('active',isOff);
-        if(pendingExpect!==undefined){ if(rawVal===pendingExpect) pendingExpect=null; }
+        log('inf',`Load algorithm: ${names[rawVal]}`);
         i=nextI-1; continue;
       }
 

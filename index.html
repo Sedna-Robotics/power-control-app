@@ -312,8 +312,8 @@ const FRAME = {
   // Registers:
   //   0xEDA9 = Load output CONTROL MODE (0=always_off, 1=batterylife, 6=always_on)
   //   0xEDA8 = Load output STATUS readback (0=off, 1=on)
-  write_on:    b(0x06,0x03,0x82,0x19,0xED,0xA9,0x41,0x06), // SET 0xEDA9=6 (always on)
-  write_off:   b(0x06,0x03,0x82,0x19,0xED,0xA9,0x41,0x00), // SET 0xEDA9=0 (always off)
+  write_on:    b(0x06,0x03,0x82,0x19,0xED,0xA9,0x06), // SET 0xEDA9=6 (always on)
+  write_off:   b(0x06,0x03,0x82,0x19,0xED,0xA9,0x00), // SET 0xEDA9=0 (always off)
   read_load:   b(0x05,0x00,0x81,0x19,0xED,0xA9),            // READ 0xEDA9 mode
   read_status: b(0x05,0x03,0x81,0x19,0xED,0xA8),            // SUBSCRIBE 0xEDA8 status
   // Subscribe to telemetry VREGs via bulk char (306b0004), 6 bytes per reg
@@ -361,6 +361,9 @@ const CHARGER_ERRORS = {
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 let fleet={}, activeId=null, txChar=null, rxChar=null, bulkChar=null;
+// Map device.id → friendly name (e.g. "Warden-01"). Editable by user.
+let nameMap = {};
+function friendlyName(entry){ return nameMap[entry.id] || entry.name; }
 let keepaliveTimer=null, handshakeDone=false;
 
 // ─── SCAN & CONNECT ───────────────────────────────────────────────────────────
@@ -402,7 +405,13 @@ async function startScan() {
   let device;
   try {
     device = await navigator.bluetooth.requestDevice({
-      acceptAllDevices: true,
+      filters: [
+        { namePrefix: 'SmartSolar' },
+        { namePrefix: 'SolarCharger' },
+        { namePrefix: 'BlueSolar' },
+        { namePrefix: 'HQ' },
+        { namePrefix: 'SCC' },
+      ],
       optionalServices: [SVC],
     });
     diag(`Device selected: ${device.name || device.id} ✓`);
@@ -631,6 +640,10 @@ function parseResponse(data){
       // 0xEDA9 = Load output CONTROL MODE (0=off, 1=batterylife, 6=always_on)
       // Comes back as type=0x00 (GET response) or type=0x03 stream
       if(reg===0xEDA9 && rawVal>=0 && rawVal<=6){
+        // Accept both type=0x00 (GET response) and type=0x03 (SET response)
+        // Stream packets (type=0x03) for 0xEDA9 encode load voltage not mode,
+        // BUT the SET response also uses type=0x03 with flags=0x03 — distinguish
+        // by value range: mode values 0-6 are valid, voltage would be much larger.
         const isOn=rawVal===0x06, isOff=rawVal===0x00;
         const names={0:'Always Off',1:'BatteryLife',2:'Conv.Alg.1',3:'Conv.Alg.2',4:'User Def.1',5:'User Def.2',6:'Always On'};
         setBadge(isOn?'deployed':isOff?'recalled':'unk');
@@ -743,6 +756,19 @@ async function writeBULK(data){
 }
 
 // ─── UI ───────────────────────────────────────────────────────────────────────
+function editName(id){
+  const entry = fleet[id];
+  if(!entry) return;
+  const current = friendlyName(entry);
+  const newName = prompt(`Rename "${current}" to:`, current);
+  if(newName && newName.trim()){
+    nameMap[id] = newName.trim();
+    renderFleet();
+    // Update connected bar if this is the active device
+    if(id === activeId) document.getElementById('connName').textContent = newName.trim();
+  }
+}
+
 function renderFleet(){
   const list=document.getElementById('deviceList');
   const empty=document.getElementById('emptyState');
@@ -761,7 +787,14 @@ function renderFleet(){
     card.innerHTML=`
       <div class="dev-signal">${bars}</div>
       <div class="dev-info">
-        <div class="dev-name">${esc(entry.name)}</div>
+        <div class="dev-name" style="display:flex;align-items:center;gap:6px">
+          <span id="dname-${esc(entry.id)}">${esc(friendlyName(entry))}</span>
+          <button onclick="event.stopPropagation();editName('${esc(entry.id)}')"
+            style="font-family:var(--mono);font-size:8px;background:transparent;border:1px solid var(--border2);
+                   color:var(--text-muted);cursor:pointer;padding:1px 5px;border-radius:2px;flex-shrink:0">
+            rename
+          </button>
+        </div>
         <div class="dev-meta">${esc(entry.id.slice(0,22))}…</div>
       </div>
       <div class="dev-actions">

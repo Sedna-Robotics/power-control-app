@@ -534,8 +534,7 @@ async function setLoadMode(value){
   // We try 0xEDA8 (load status: 0=off, 1=on) first — confirmed from pysmartsolar.
   // Then 0xEDA9 (VE.Direct mode: 0=off, 6=always_on) as fallback.
 
-  const label = value === 0x01 || value === 0x06 ? 'ON' : 'OFF';
-  log('inf',`Sending power-${label} command…`);
+  log('inf',`Sending power-${value >= 0x01 ? 'ON' : 'OFF'} command…`);
 
   // Confirmed correct format (phoenix.py): 06 03 82 19 <REG_HI> <REG_LO> 41 <VAL>
   // 0x41 = CBOR byte_string(1) — the value wrapper that was missing in all prior attempts
